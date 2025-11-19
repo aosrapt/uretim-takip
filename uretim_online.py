@@ -7,7 +7,7 @@ import ast
 import time
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Online Üretim (V27 Final)", layout="wide", page_icon="🏭")
+st.set_page_config(page_title="Online Üretim (V28 Final)", layout="wide", page_icon="🏭")
 
 # --- GOOGLE BAĞLANTISI ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -53,6 +53,7 @@ def get_worksheet(tab_name):
     except: return None
 
 def load_data(key):
+    """Veriyi çekerken her şeyi String'e çevirir."""
     tab_name = TABS[key]
     expected_cols = SCHEMA[tab_name]
     ws = get_worksheet(tab_name)
@@ -61,45 +62,66 @@ def load_data(key):
             data = ws.get_all_records()
             df = pd.DataFrame(data)
             if df.empty: return pd.DataFrame(columns=expected_cols)
+            
+            # Eksik kolonları tamamla
             for col in expected_cols:
                 if col not in df.columns: df[col] = ""
+            
+            # Sadece şemadaki kolonları al ve hepsini string yap
+            df = df[expected_cols].astype(str)
             return df
         except: return pd.DataFrame(columns=expected_cols)
     return pd.DataFrame(columns=expected_cols)
 
 def save_data(df, key):
     """
-    V27: USER_ENTERED Modu ile Kayıt
-    Bu mod, veriyi sanki kullanıcı eliyle yazıyormuş gibi gönderir.
-    '0', 0, '0.0' gibi değerlerin neden olduğu Invalid Value hatasını kesin çözer.
+    V28: NÜKLEER ÇÖZÜM
+    Pandas'ın 'astype(str)' fonksiyonuna bile güvenmiyoruz.
+    Her hücreyi tek tek python döngüsüyle 'str()' fonksiyonundan geçiriyoruz.
     """
     ws = get_worksheet(TABS[key])
     if ws:
         ws.clear()
         
-        # 1. Sütunları Eşitle
+        # 1. Şemaya Uygunluk
         tab_name = TABS[key]
         expected_cols = SCHEMA[tab_name]
         for c in expected_cols:
             if c not in df.columns: df[c] = ""
         df = df[expected_cols]
         
-        # 2. String Dönüşümü (Garantileme)
-        df = df.fillna("").astype(str)
+        # 2. MANUEL TEMİZLİK (En güvenli yöntem)
+        # DataFrame'i listeye çevir
+        raw_data = df.values.tolist()
+        clean_data = []
         
-        # 3. Listeye Çevir
-        final_data = [df.columns.values.tolist()] + df.values.tolist()
+        # Her satırı ve her hücreyi gez
+        for row in raw_data:
+            clean_row = []
+            for item in row:
+                # Eğer None veya NaN ise boş string
+                if item is None or pd.isna(item):
+                    clean_row.append("")
+                else:
+                    # Ne olursa olsun String'e çevir
+                    clean_row.append(str(item))
+            clean_data.append(clean_row)
+            
+        # 3. Başlıkları Hazırla
+        headers = [str(c) for c in df.columns]
         
-        # 4. USER_ENTERED Modu ile Güncelle (Hata Çözümü Burası)
+        # 4. Birleştir
+        final_payload = [headers] + clean_data
+        
+        # 5. Gönder (USER_ENTERED ile Google'ın yorumlamasına izin ver)
         try:
             ws.update(
                 range_name='A1', 
-                values=final_data, 
+                values=final_payload, 
                 value_input_option='USER_ENTERED'
             )
         except TypeError:
-            # Gspread eski sürümse fallback
-            ws.update(final_data, value_input_option='USER_ENTERED')
+            ws.update(final_payload, value_input_option='USER_ENTERED')
 
 # --- FORMATLAR & RESET ---
 if 'form_key' not in st.session_state: st.session_state['form_key'] = 0
@@ -114,7 +136,6 @@ def format_date_tr(date_obj):
 try:
     df_ing_global = load_data("ingredients")
     if not df_ing_global.empty:
-        df_ing_global["Tip"] = df_ing_global["Tip"].astype(str) # Garanti
         SOLID = df_ing_global[df_ing_global["Tip"] == "Katı"]["Bilesen_Adi"].tolist()
         LIQUID = df_ing_global[df_ing_global["Tip"] == "Sıvı"]["Bilesen_Adi"].tolist()
         PACKAGING = df_ing_global[df_ing_global["Tip"] == "Ambalaj"]["Bilesen_Adi"].tolist()
@@ -173,17 +194,16 @@ if menu == "⚙️ Reçete & Hammadde":
         if st.button("Ekle", key=f"bi_{f_key}"):
             if nn and nn not in ALL_ING:
                 df = load_data("ingredients")
-                # Yeni satır ekle
+                # Yeni satır - HEPSİ STRING
                 new_row = pd.DataFrame([[str(nn), str(nt)]], columns=["Bilesen_Adi","Tip"])
                 df = pd.concat([df, new_row], ignore_index=True)
                 save_data(df, "ingredients")
                 
-                # Limit ekle (USER_ENTERED sayesinde "0" sorun çıkarmaz)
                 dfl = load_data("limits")
+                # "0" STRING OLARAK
                 new_lim = pd.DataFrame([[str(nn), "0"]], columns=["Hammadde","Kritik_Limit_KG"])
                 dfl = pd.concat([dfl, new_lim], ignore_index=True)
                 save_data(dfl, "limits")
-                
                 st.success("Eklendi"); reset_forms(); st.rerun()
         st.dataframe(df_ing_global)
 
@@ -221,8 +241,9 @@ if menu == "⚙️ Reçete & Hammadde":
             if st.form_submit_button("Kaydet"):
                 if abs(tot-100)>0.001: st.error("Katı toplam %100 olmalı")
                 else:
+                    # HEPSİ STRING
                     nr = pd.DataFrame([{"Urun_Kodu":str(pc), "Urun_Adi":str(pn), "Net_Paket_KG":str(pnt), "Raf_Omru_Ay":str(psk), "Recete_Kati_JSON":str(ns), "Recete_Sivi_JSON":str(nl)}])
-                    if op=="Düzenle": prods = prods[prods["Urun_Kodu"]!=pc]
+                    if op=="Düzenle": prods = prods[prods["Urun_Kodu"]!=str(pc)]
                     prods = pd.concat([prods, nr], ignore_index=True)
                     save_data(prods, "products"); st.success("OK"); reset_forms(); st.rerun()
         
