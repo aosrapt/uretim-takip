@@ -7,7 +7,7 @@ import ast
 import time
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Online Üretim (V22 Final)", layout="wide", page_icon="🏭")
+st.set_page_config(page_title="Online Üretim (V23)", layout="wide", page_icon="🏭")
 
 # --- GOOGLE BAĞLANTISI ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -53,24 +53,38 @@ def get_worksheet(tab_name):
     except: return None
 
 def load_data(key):
+    """Hata korumalı veri yükleme fonksiyonu"""
     tab_name = TABS[key]
     expected_cols = SCHEMA[tab_name]
     ws = get_worksheet(tab_name)
+    
     if ws:
         try:
             data = ws.get_all_records()
             df = pd.DataFrame(data)
-            if df.empty: return pd.DataFrame(columns=expected_cols)
+            
+            # Tablo boşsa veya sütunlar eksikse düzelt
+            if df.empty:
+                return pd.DataFrame(columns=expected_cols)
+            
+            # Eksik sütunları zorla ekle (KeyError Önleyici)
             for col in expected_cols:
-                if col not in df.columns: df[col] = ""
-            for col in df.columns:
-                df[col] = df[col].astype(str) # Her şeyi string oku, garanti olsun
+                if col not in df.columns:
+                    df[col] = "" # Boş sütun oluştur
+            
+            # Kritik verileri string yap
+            for str_col in ["Parti_No", "Uretim_Parti_No", "Urun_Kodu", "Bilesen_Adi", "Tip"]:
+                if str_col in df.columns:
+                    df[str_col] = df[str_col].astype(str)
+                    
             return df
-        except: return pd.DataFrame(columns=expected_cols)
+        except Exception:
+            # Ne olursa olsun boş tablo dön, çökme yapma
+            return pd.DataFrame(columns=expected_cols)
+            
     return pd.DataFrame(columns=expected_cols)
 
 def clean_for_json(val):
-    """Veriyi Google Sheets'in kabul edeceği formata çevirir"""
     if pd.isna(val): return ""
     if isinstance(val, (datetime, date)): return val.strftime("%Y-%m-%d")
     return str(val)
@@ -79,12 +93,11 @@ def save_data(df, key):
     ws = get_worksheet(TABS[key])
     if ws:
         ws.clear()
-        # DataFrame'i temizle ve listeye çevir
         df_clean = df.fillna("").applymap(clean_for_json)
         data = [df.columns.values.tolist()] + df_clean.values.tolist()
         ws.update(data)
 
-# --- FORMATLAR & RESET ---
+# --- FORMATLAR ---
 if 'form_key' not in st.session_state: st.session_state['form_key'] = 0
 if 'is_admin' not in st.session_state: st.session_state['is_admin'] = False
 def reset_forms(): st.session_state['form_key'] += 1
@@ -93,16 +106,27 @@ def format_date_tr(date_obj):
     try: return pd.to_datetime(date_obj).strftime("%d/%m/%Y")
     except: return str(date_obj)
 
-# --- GLOBAL LİSTELER ---
+# --- GLOBAL LİSTELER (GÜVENLİ MOD) ---
+# Burası program açılırken çalışır, hata verirse boş listelerle devam eder
 try:
     df_ing_global = load_data("ingredients")
-    if not df_ing_global.empty and "Bilesen_Adi" in df_ing_global.columns:
+    
+    # Sütun kontrolü (Hata sebebi burasıydı)
+    if not df_ing_global.empty and "Bilesen_Adi" in df_ing_global.columns and "Tip" in df_ing_global.columns:
         SOLID = df_ing_global[df_ing_global["Tip"] == "Katı"]["Bilesen_Adi"].tolist()
         LIQUID = df_ing_global[df_ing_global["Tip"] == "Sıvı"]["Bilesen_Adi"].tolist()
         PACKAGING = df_ing_global[df_ing_global["Tip"] == "Ambalaj"]["Bilesen_Adi"].tolist()
         ALL_ING = SOLID + LIQUID + PACKAGING
-    else: SOLID, LIQUID, PACKAGING, ALL_ING = [], [], [], []
-except: SOLID, LIQUID, PACKAGING, ALL_ING = [], [], [], []
+    else:
+        # Sütunlar yoksa varsayılanları yükle
+        SOLID = ["Gluten", "Bezelye İzolatı"]
+        LIQUID = ["Karamel"]
+        PACKAGING = ["Ambalaj"]
+        ALL_ING = SOLID + LIQUID + PACKAGING
+except Exception as e:
+    # Çok büyük bir hata olursa program çökmesin diye
+    print(f"Liste Yükleme Hatası: {e}")
+    SOLID, LIQUID, PACKAGING, ALL_ING = [], [], [], []
 
 # --- SIDEBAR ---
 st.sidebar.title("🏭 Fabrika Paneli")
@@ -130,8 +154,11 @@ with st.sidebar:
                 for t_key, t_name in TABS.items():
                     try: ws = sh.worksheet(t_name)
                     except: ws = sh.add_worksheet(title=t_name, rows="1000", cols="20")
+                    
+                    # Boşsa başlıkları yaz
                     if not ws.get_all_values(): 
                         if t_name in SCHEMA: ws.append_row(SCHEMA[t_name])
+                    
                     time.sleep(0.5)
             st.success("Onarım Tamamlandı!"); time.sleep(1); st.rerun()
 
@@ -155,12 +182,18 @@ if menu == "⚙️ Reçete & Hammadde":
         if st.button("Ekle", key=f"bi_{f_key}"):
             if nn and nn not in ALL_ING:
                 df = load_data("ingredients")
+                # DataFrame oluştururken sütunları garanti et
                 new_row = pd.DataFrame([[nn, nt]], columns=["Bilesen_Adi","Tip"])
-                df = pd.concat([df, new_row], ignore_index=True)
+                if df.empty:
+                    df = new_row
+                else:
+                    df = pd.concat([df, new_row], ignore_index=True)
                 save_data(df, "ingredients")
                 
                 dfl = load_data("limits")
-                dfl = pd.concat([dfl, pd.DataFrame([[nn, 0]], columns=["Hammadde","Kritik_Limit_KG"])], ignore_index=True)
+                new_lim = pd.DataFrame([[nn, 0]], columns=["Hammadde","Kritik_Limit_KG"])
+                if dfl.empty: dfl = new_lim
+                else: dfl = pd.concat([dfl, new_lim], ignore_index=True)
                 save_data(dfl, "limits")
                 st.success("Eklendi"); reset_forms(); st.rerun()
         st.dataframe(df_ing_global)
@@ -412,7 +445,8 @@ elif menu == "📊 Raporlar":
     if not prod.empty:
         def sd(n,d): return n/d*100 if d>0 else 0
         
-        # Kolonları güvenli çek
+        # Güvenli dönüşümler (NaN -> 0)
+        prod = prod.fillna(0)
         net_kg = pd.to_numeric(prod.get("Uretilen_Net_KG", 0), errors='coerce').fillna(0)
         fk = pd.to_numeric(prod.get("Fire_Kati_KG", 0), errors='coerce').fillna(0)
         fs = pd.to_numeric(prod.get("Fire_Sivi_KG", 0), errors='coerce').fillna(0)
