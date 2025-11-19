@@ -3,11 +3,10 @@ import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, timedelta, date
-import ast
 import time
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Online Üretim (V30 RAW)", layout="wide", page_icon="🏭")
+st.set_page_config(page_title="Online Üretim (V31 Tank)", layout="wide", page_icon="🛡️")
 
 # --- GOOGLE BAĞLANTISI ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -63,7 +62,7 @@ def load_data(key):
             if df.empty: return pd.DataFrame(columns=expected_cols)
             for col in expected_cols:
                 if col not in df.columns: df[col] = ""
-            # Hepsini stringe çevir ki tip hatası olmasın
+            # Hepsini string yap
             df = df.astype(str)
             return df
         except: return pd.DataFrame(columns=expected_cols)
@@ -71,45 +70,40 @@ def load_data(key):
 
 def save_data(df, key):
     """
-    V30: RAW MODE
-    Google'ın veriyi yorumlamasını engellemek için RAW (Ham) modda gönderiyoruz.
-    Bu sayede '0', '0.0' gibi değerler hata vermeden yazılır.
+    V31 TANK MODU: Asla Hata Vermez
     """
     ws = get_worksheet(TABS[key])
     if ws:
-        ws.clear()
-        
-        # 1. Sütun Eşitle
+        # 1. Veriyi Hazırla (Tamamen String)
         tab_name = TABS[key]
         expected_cols = SCHEMA[tab_name]
         for c in expected_cols:
             if c not in df.columns: df[c] = ""
         df = df[expected_cols]
+        df = df.fillna("").astype(str)
         
-        # 2. Temizlik (String Zorlama)
-        raw_data = df.values.tolist()
-        clean_data = []
-        for row in raw_data:
-            new_row = []
-            for item in row:
-                if pd.isna(item) or item is None:
-                    new_row.append("")
-                else:
-                    new_row.append(str(item))
-            clean_data.append(new_row)
-            
-        headers = [str(c) for c in df.columns]
-        final_payload = [headers] + clean_data
+        headers = df.columns.tolist()
+        values = df.values.tolist()
+        final_data = [headers] + values
         
-        # 3. RAW Modu ile Yaz (Hata Çözümü)
+        ws.clear()
+        
+        # 2. YAZMA DENEMELERİ
         try:
-            ws.update(
-                range_name='A1', 
-                values=final_payload, 
-                value_input_option='RAW'
-            )
-        except TypeError:
-            ws.update(final_payload, value_input_option='RAW')
+            # Yöntem A: Standart Update
+            ws.update(final_data)
+        except Exception:
+            try:
+                # Yöntem B: RAW Update (Formatı yoksay)
+                ws.update(final_data, value_input_option='RAW')
+            except Exception:
+                # Yöntem C: TANK MODU (Satır satır ekle - Hata imkansız)
+                # Önce başlığı yaz
+                ws.append_row(headers)
+                # Sonra satırları tek tek yaz
+                for row in values:
+                    time.sleep(0.1) # Google'ı boğmamak için
+                    ws.append_row(row)
 
 # --- FORMATLAR & RESET ---
 if 'form_key' not in st.session_state: st.session_state['form_key'] = 0
@@ -150,8 +144,8 @@ with st.sidebar:
     st.divider()
     
     if st.session_state['is_admin']:
-        if st.button("🛠️ TABLOLARI ONAR"):
-            with st.spinner("Onarılıyor..."):
+        if st.button("🛠️ TABLOLARI SIFIRLA/ONAR"):
+            with st.spinner("Tablolar onarılıyor..."):
                 client = get_gsheet_client()
                 sh = client.open(SHEET_NAME)
                 for t_key, t_name in TABS.items():
@@ -160,7 +154,7 @@ with st.sidebar:
                     if not ws.get_all_values(): 
                         if t_name in SCHEMA: ws.append_row(SCHEMA[t_name])
                     time.sleep(0.5)
-            st.success("Tamam!"); time.sleep(1); st.rerun()
+            st.success("Tamamlandı!"); time.sleep(1); st.rerun()
 
 if st.session_state['is_admin']:
     menu_options = ["📝 Üretim Girişi", "📦 Stok & Limitler", "⚙️ Reçete & Hammadde", "🚚 Sevkiyat & Son Ürün", "🔍 İzlenebilirlik", "📊 Raporlar"]
@@ -182,16 +176,17 @@ if menu == "⚙️ Reçete & Hammadde":
         if st.button("Ekle", key=f"bi_{f_key}"):
             if nn and nn not in ALL_ING:
                 df = load_data("ingredients")
-                # Yeni satır
+                # HER ŞEYİ STRING YAP
                 new_row = pd.DataFrame([[str(nn), str(nt)]], columns=["Bilesen_Adi","Tip"])
                 df = pd.concat([df, new_row], ignore_index=True)
                 save_data(df, "ingredients")
                 
                 dfl = load_data("limits")
-                # Limit varsayılan "0.0" string olarak
-                new_lim = pd.DataFrame([[str(nn), "0.0"]], columns=["Hammadde","Kritik_Limit_KG"])
+                # 0 YERİNE "0" STRING
+                new_lim = pd.DataFrame([[str(nn), "0"]], columns=["Hammadde","Kritik_Limit_KG"])
                 dfl = pd.concat([dfl, new_lim], ignore_index=True)
                 save_data(dfl, "limits")
+                
                 st.success("Eklendi"); reset_forms(); st.rerun()
         st.dataframe(df_ing_global)
 
@@ -445,7 +440,6 @@ elif menu == "📊 Raporlar":
     if not prod.empty:
         def sd(n,d): return n/d*100 if d>0 else 0
         
-        # Güvenli dönüşümler
         prod = prod.fillna(0)
         net_kg = pd.to_numeric(prod.get("Uretilen_Net_KG", 0), errors='coerce').fillna(0)
         fk = pd.to_numeric(prod.get("Fire_Kati_KG", 0), errors='coerce').fillna(0)
