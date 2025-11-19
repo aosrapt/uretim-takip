@@ -7,7 +7,7 @@ import ast
 import time
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Online Üretim (V29 Final)", layout="wide", page_icon="🏭")
+st.set_page_config(page_title="Online Üretim (V30 RAW)", layout="wide", page_icon="🏭")
 
 # --- GOOGLE BAĞLANTISI ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -25,7 +25,7 @@ def get_gsheet_client():
     except Exception as e:
         st.error(f"Bağlantı Hatası: {e}"); return None
 
-# --- TABLO ŞEMASI (BAŞLIKLAR) ---
+# --- TABLO ŞEMASI ---
 SCHEMA = {
     "bilesenler": ["Bilesen_Adi", "Tip"],
     "limitler": ["Hammadde", "Kritik_Limit_KG"],
@@ -53,71 +53,63 @@ def get_worksheet(tab_name):
     except: return None
 
 def load_data(key):
-    """
-    V29 GÜNCELLEMESİ:
-    get_all_records() yerine get_all_values() kullanıyoruz.
-    Böylece başlıklar bozuk olsa bile DataFrame'i manuel oluşturup düzeltebiliyoruz.
-    """
     tab_name = TABS[key]
     expected_cols = SCHEMA[tab_name]
     ws = get_worksheet(tab_name)
-    
     if ws:
         try:
-            all_values = ws.get_all_values()
-            
-            # Eğer tablo boşsa veya başlık satırı yoksa
-            if not all_values:
-                return pd.DataFrame(columns=expected_cols)
-            
-            # İlk satırı başlık olarak al
-            headers = all_values[0]
-            data = all_values[1:]
-            
-            # DataFrame oluştur
-            df = pd.DataFrame(data, columns=headers)
-            
-            # EKSİK SÜTUN KONTROLÜ VE ONARIMI
-            # Eğer beklenen sütunlardan biri eksikse, onu boş olarak ekle
-            # Bu sayede 'KeyError: Bilesen_Adi' hatası ASLA alınmaz.
+            data = ws.get_all_records()
+            df = pd.DataFrame(data)
+            if df.empty: return pd.DataFrame(columns=expected_cols)
             for col in expected_cols:
-                if col not in df.columns:
-                    df[col] = ""
-            
+                if col not in df.columns: df[col] = ""
+            # Hepsini stringe çevir ki tip hatası olmasın
+            df = df.astype(str)
             return df
-        except Exception:
-            return pd.DataFrame(columns=expected_cols)
-            
+        except: return pd.DataFrame(columns=expected_cols)
     return pd.DataFrame(columns=expected_cols)
 
 def save_data(df, key):
+    """
+    V30: RAW MODE
+    Google'ın veriyi yorumlamasını engellemek için RAW (Ham) modda gönderiyoruz.
+    Bu sayede '0', '0.0' gibi değerler hata vermeden yazılır.
+    """
     ws = get_worksheet(TABS[key])
     if ws:
         ws.clear()
+        
+        # 1. Sütun Eşitle
         tab_name = TABS[key]
         expected_cols = SCHEMA[tab_name]
-        
-        # Sütunları Eşitle
         for c in expected_cols:
             if c not in df.columns: df[c] = ""
         df = df[expected_cols]
         
-        # Her şeyi string yap (Google Hatası Önleyici)
+        # 2. Temizlik (String Zorlama)
         raw_data = df.values.tolist()
         clean_data = []
         for row in raw_data:
-            clean_row = [str(item) if item is not None else "" for item in row]
-            clean_data.append(clean_row)
+            new_row = []
+            for item in row:
+                if pd.isna(item) or item is None:
+                    new_row.append("")
+                else:
+                    new_row.append(str(item))
+            clean_data.append(new_row)
             
-        # Başlıklar
         headers = [str(c) for c in df.columns]
         final_payload = [headers] + clean_data
         
-        # Yaz
+        # 3. RAW Modu ile Yaz (Hata Çözümü)
         try:
-            ws.update(range_name='A1', values=final_payload, value_input_option='USER_ENTERED')
+            ws.update(
+                range_name='A1', 
+                values=final_payload, 
+                value_input_option='RAW'
+            )
         except TypeError:
-            ws.update(final_payload, value_input_option='USER_ENTERED')
+            ws.update(final_payload, value_input_option='RAW')
 
 # --- FORMATLAR & RESET ---
 if 'form_key' not in st.session_state: st.session_state['form_key'] = 0
@@ -128,19 +120,16 @@ def format_date_tr(date_obj):
     try: return pd.to_datetime(date_obj).strftime("%d/%m/%Y")
     except: return str(date_obj)
 
-# --- GLOBAL LİSTELER (ÇÖKME ÖNLEYİCİ MOD) ---
+# --- GLOBAL LİSTELER ---
 try:
     df_ing_global = load_data("ingredients")
-    # load_data artık Bilesen_Adi sütununu garanti ediyor, ama yine de kontrol edelim
-    if not df_ing_global.empty and "Bilesen_Adi" in df_ing_global.columns:
+    if not df_ing_global.empty:
         SOLID = df_ing_global[df_ing_global["Tip"] == "Katı"]["Bilesen_Adi"].tolist()
         LIQUID = df_ing_global[df_ing_global["Tip"] == "Sıvı"]["Bilesen_Adi"].tolist()
         PACKAGING = df_ing_global[df_ing_global["Tip"] == "Ambalaj"]["Bilesen_Adi"].tolist()
         ALL_ING = SOLID + LIQUID + PACKAGING
-    else:
-        SOLID, LIQUID, PACKAGING, ALL_ING = [], [], [], []
-except Exception:
-    SOLID, LIQUID, PACKAGING, ALL_ING = [], [], [], []
+    else: SOLID, LIQUID, PACKAGING, ALL_ING = [], [], [], []
+except: SOLID, LIQUID, PACKAGING, ALL_ING = [], [], [], []
 
 # --- SIDEBAR ---
 st.sidebar.title("🏭 Fabrika Paneli")
@@ -161,24 +150,17 @@ with st.sidebar:
     st.divider()
     
     if st.session_state['is_admin']:
-        if st.button("🛠️ TABLOLARI ONAR (BAŞLIKLARI YAZ)"):
-            with st.spinner("Tablo başlıkları kontrol ediliyor ve onarılıyor..."):
+        if st.button("🛠️ TABLOLARI ONAR"):
+            with st.spinner("Onarılıyor..."):
                 client = get_gsheet_client()
                 sh = client.open(SHEET_NAME)
                 for t_key, t_name in TABS.items():
                     try: ws = sh.worksheet(t_name)
                     except: ws = sh.add_worksheet(title=t_name, rows="1000", cols="20")
-                    
-                    # V29: Eğer tablo boşsa VEYA başlıklar yanlışsa düzelt
-                    vals = ws.get_all_values()
-                    if not vals or vals[0] != SCHEMA[t_name]:
-                        # Önce temizle
-                        ws.clear()
-                        # Şemayı yaz
-                        ws.append_row(SCHEMA[t_name])
-                        # Eğer veri varsa ve kurtarabiliyorsan kurtar (Basit mod: Sadece başlık yaz)
+                    if not ws.get_all_values(): 
+                        if t_name in SCHEMA: ws.append_row(SCHEMA[t_name])
                     time.sleep(0.5)
-            st.success("Tüm tablolar onarıldı! Lütfen sayfayı yenileyin."); time.sleep(2); st.rerun()
+            st.success("Tamam!"); time.sleep(1); st.rerun()
 
 if st.session_state['is_admin']:
     menu_options = ["📝 Üretim Girişi", "📦 Stok & Limitler", "⚙️ Reçete & Hammadde", "🚚 Sevkiyat & Son Ürün", "🔍 İzlenebilirlik", "📊 Raporlar"]
@@ -200,13 +182,14 @@ if menu == "⚙️ Reçete & Hammadde":
         if st.button("Ekle", key=f"bi_{f_key}"):
             if nn and nn not in ALL_ING:
                 df = load_data("ingredients")
-                # STRING ZORLAMA
+                # Yeni satır
                 new_row = pd.DataFrame([[str(nn), str(nt)]], columns=["Bilesen_Adi","Tip"])
                 df = pd.concat([df, new_row], ignore_index=True)
                 save_data(df, "ingredients")
                 
                 dfl = load_data("limits")
-                new_lim = pd.DataFrame([[str(nn), "0"]], columns=["Hammadde","Kritik_Limit_KG"])
+                # Limit varsayılan "0.0" string olarak
+                new_lim = pd.DataFrame([[str(nn), "0.0"]], columns=["Hammadde","Kritik_Limit_KG"])
                 dfl = pd.concat([dfl, new_lim], ignore_index=True)
                 save_data(dfl, "limits")
                 st.success("Eklendi"); reset_forms(); st.rerun()
@@ -425,7 +408,7 @@ elif menu == "🚚 Sevkiyat & Son Ürün":
         if not fg.empty:
             v=fg[fg["Kalan_Net_KG"]>0].copy()
             v["Tarih"]=v["Uretim_Tarihi"].apply(format_date_tr); v["SKT"]=v["SKT"].apply(format_date_tr)
-            v["Paket"]=v["Kalan_Net_KG"]/v["Paket_Agirligi"]
+            v["Paket"]=v["Kalan_Net_KG"]/pd.to_numeric(v["Paket_Agirligi"], errors='coerce')
             st.dataframe(v[["Urun_Kodu","Uretim_Parti_No","Tarih","SKT","Kalan_Net_KG","Paket"]])
 
 elif menu == "🔍 İzlenebilirlik":
