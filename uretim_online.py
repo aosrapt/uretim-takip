@@ -2,12 +2,12 @@ import streamlit as st
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import ast
 import time
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Online Üretim (V21)", layout="wide", page_icon="🏭")
+st.set_page_config(page_title="Online Üretim (V22 Final)", layout="wide", page_icon="🏭")
 
 # --- GOOGLE BAĞLANTISI ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -49,11 +49,6 @@ def get_worksheet(tab_name):
         sh = client.open(SHEET_NAME)
         try: ws = sh.worksheet(tab_name)
         except: ws = sh.add_worksheet(title=tab_name, rows="1000", cols="20")
-        
-        # Eğer boşsa başlıkları yaz
-        if len(ws.get_all_values()) == 0:
-            if tab_name in SCHEMA: ws.append_row(SCHEMA[tab_name])
-            
         return ws
     except: return None
 
@@ -61,28 +56,32 @@ def load_data(key):
     tab_name = TABS[key]
     expected_cols = SCHEMA[tab_name]
     ws = get_worksheet(tab_name)
-    
     if ws:
         try:
             data = ws.get_all_records()
             df = pd.DataFrame(data)
             if df.empty: return pd.DataFrame(columns=expected_cols)
-            
             for col in expected_cols:
                 if col not in df.columns: df[col] = ""
-            
-            for str_col in ["Parti_No", "Uretim_Parti_No", "Urun_Kodu", "Bilesen_Adi"]:
-                if str_col in df.columns: df[str_col] = df[str_col].astype(str)
+            for col in df.columns:
+                df[col] = df[col].astype(str) # Her şeyi string oku, garanti olsun
             return df
         except: return pd.DataFrame(columns=expected_cols)
     return pd.DataFrame(columns=expected_cols)
+
+def clean_for_json(val):
+    """Veriyi Google Sheets'in kabul edeceği formata çevirir"""
+    if pd.isna(val): return ""
+    if isinstance(val, (datetime, date)): return val.strftime("%Y-%m-%d")
+    return str(val)
 
 def save_data(df, key):
     ws = get_worksheet(TABS[key])
     if ws:
         ws.clear()
-        df = df.fillna("")
-        data = [df.columns.values.tolist()] + df.astype(str).values.tolist()
+        # DataFrame'i temizle ve listeye çevir
+        df_clean = df.fillna("").applymap(clean_for_json)
+        data = [df.columns.values.tolist()] + df_clean.values.tolist()
         ws.update(data)
 
 # --- FORMATLAR & RESET ---
@@ -90,7 +89,7 @@ if 'form_key' not in st.session_state: st.session_state['form_key'] = 0
 if 'is_admin' not in st.session_state: st.session_state['is_admin'] = False
 def reset_forms(): st.session_state['form_key'] += 1
 def format_date_tr(date_obj):
-    if pd.isna(date_obj) or str(date_obj)=="": return "-"
+    if pd.isna(date_obj) or str(date_obj)=="" or str(date_obj)=="nan": return "-"
     try: return pd.to_datetime(date_obj).strftime("%d/%m/%Y")
     except: return str(date_obj)
 
@@ -123,11 +122,9 @@ with st.sidebar:
     
     st.divider()
     
-    # --- TAMİR BUTONU (DÜZELTİLDİ: st.status yerine st.spinner) ---
     if st.session_state['is_admin']:
-        st.markdown("### ⚠️ Sistem Bakım")
-        if st.button("🛠️ TABLOLARI ONAR (Tek Tık)"):
-            with st.spinner("Google Tabloları Kontrol Ediliyor... Lütfen Bekleyin."):
+        if st.button("🛠️ TABLOLARI ONAR"):
+            with st.spinner("Tablolar kontrol ediliyor..."):
                 client = get_gsheet_client()
                 sh = client.open(SHEET_NAME)
                 for t_key, t_name in TABS.items():
@@ -136,9 +133,7 @@ with st.sidebar:
                     if not ws.get_all_values(): 
                         if t_name in SCHEMA: ws.append_row(SCHEMA[t_name])
                     time.sleep(0.5)
-            st.success("Onarım Tamamlandı! Sayfa yenileniyor...")
-            time.sleep(1)
-            st.rerun()
+            st.success("Onarım Tamamlandı!"); time.sleep(1); st.rerun()
 
 if st.session_state['is_admin']:
     menu_options = ["📝 Üretim Girişi", "📦 Stok & Limitler", "⚙️ Reçete & Hammadde", "🚚 Sevkiyat & Son Ürün", "🔍 İzlenebilirlik", "📊 Raporlar"]
@@ -160,8 +155,10 @@ if menu == "⚙️ Reçete & Hammadde":
         if st.button("Ekle", key=f"bi_{f_key}"):
             if nn and nn not in ALL_ING:
                 df = load_data("ingredients")
-                df = pd.concat([df, pd.DataFrame([[nn, nt]], columns=["Bilesen_Adi","Tip"])], ignore_index=True)
+                new_row = pd.DataFrame([[nn, nt]], columns=["Bilesen_Adi","Tip"])
+                df = pd.concat([df, new_row], ignore_index=True)
                 save_data(df, "ingredients")
+                
                 dfl = load_data("limits")
                 dfl = pd.concat([dfl, pd.DataFrame([[nn, 0]], columns=["Hammadde","Kritik_Limit_KG"])], ignore_index=True)
                 save_data(dfl, "limits")
@@ -414,10 +411,18 @@ elif menu == "📊 Raporlar":
     prod=load_data("production")
     if not prod.empty:
         def sd(n,d): return n/d*100 if d>0 else 0
-        prod["Giren"]=prod["Uretilen_Net_KG"]+prod["Fire_Kati_KG"]
-        prod["Katı %"]=prod.apply(lambda x:sd(x["Fire_Kati_KG"],x["Giren"]), axis=1)
-        prod["Sıvı %"]=prod.apply(lambda x:sd(x["Fire_Sivi_KG"],x["Uretilen_Net_KG"]), axis=1)
-        prod["Amb (gr/pkt)"]=prod.apply(lambda x:sd(x["Fire_Amb_KG"]*1000,x["Uretilen_Paket"])/100, axis=1)
+        
+        # Kolonları güvenli çek
+        net_kg = pd.to_numeric(prod.get("Uretilen_Net_KG", 0), errors='coerce').fillna(0)
+        fk = pd.to_numeric(prod.get("Fire_Kati_KG", 0), errors='coerce').fillna(0)
+        fs = pd.to_numeric(prod.get("Fire_Sivi_KG", 0), errors='coerce').fillna(0)
+        fa = pd.to_numeric(prod.get("Fire_Amb_KG", 0), errors='coerce').fillna(0)
+        up = pd.to_numeric(prod.get("Uretilen_Paket", 0), errors='coerce').fillna(0)
+
+        prod["Giren"] = net_kg + fk
+        prod["Katı %"] = [sd(f, g) for f, g in zip(fk, prod["Giren"])]
+        prod["Sıvı %"] = [sd(f, n) for f, n in zip(fs, net_kg)]
+        prod["Amb (gr/pkt)"] = [sd(f*1000, p)/100 for f, p in zip(fa, up)]
         
         cols=["Tarih","Urun_Kodu","Uretim_Parti_No","Uretilen_Net_KG","Fire_Kati_KG","Katı %","Sıvı %","Amb (gr/pkt)"]
         fin=[c for c in cols if c in prod.columns]
