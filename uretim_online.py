@@ -4,9 +4,10 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, timedelta
 import ast
+import time
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Online Üretim (Admin)", layout="wide", page_icon="🔒")
+st.set_page_config(page_title="Online Üretim (V19)", layout="wide", page_icon="🏭")
 
 # --- GOOGLE BAĞLANTISI ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -24,38 +25,59 @@ def get_gsheet_client():
     except Exception as e:
         st.error(f"Bağlantı Hatası: {e}"); return None
 
-def get_worksheet(tab_name):
-    client = get_gsheet_client()
-    if not client: return None
-    try:
-        sh = client.open(SHEET_NAME)
-        try: ws = sh.worksheet(tab_name)
-        except: ws = sh.add_worksheet(title=tab_name, rows="100", cols="20")
-        return ws
-    except: return None
+# --- TABLO YAPISI (ŞEMA) ---
+# Bu başlıklar boş sekmelere otomatik yazılacak
+SCHEMA = {
+    "bilesenler": ["Bilesen_Adi", "Tip"],
+    "limitler": ["Hammadde", "Kritik_Limit_KG"],
+    "urun_tanimlari": ["Urun_Kodu", "Urun_Adi", "Net_Paket_KG", "Raf_Omru_Ay", "Recete_Kati_JSON", "Recete_Sivi_JSON"],
+    "stok_durumu": ["Stok_ID", "Tarih", "Hammadde", "Parti_No", "Giris_Miktari", "Kalan_Miktar", "Birim", "Ambalaj_Birim_Gr"],
+    "uretim_loglari": ["Uretim_ID", "Tarih", "Urun_Kodu", "Uretim_Parti_No", "Uretilen_Paket", "Uretilen_Net_KG", "Fire_Kati_KG", "Fire_Sivi_KG", "Fire_Amb_KG"],
+    "bitmis_urunler": ["Uretim_ID", "Urun_Kodu", "Uretim_Parti_No", "Uretim_Tarihi", "SKT", "Baslangic_Net_KG", "Kalan_Net_KG", "Paket_Agirligi"],
+    "sevkiyatlar": ["Sevkiyat_ID", "Tarih", "Uretim_ID", "Musteri", "Tip", "Sevk_Edilen_KG", "Aciklama"]
+}
 
-# --- VERİ YÖNETİMİ ---
+# Sekme Adı Eşleştirmesi
 TABS = {
     "production": "uretim_loglari", "inventory": "stok_durumu",
     "products": "urun_tanimlari", "finished_goods": "bitmis_urunler",
     "shipments": "sevkiyatlar", "limits": "limitler", "ingredients": "bilesenler"
 }
 
+def get_worksheet(tab_name):
+    client = get_gsheet_client()
+    if not client: return None
+    try:
+        sh = client.open(SHEET_NAME)
+        try: ws = sh.worksheet(tab_name)
+        except: ws = sh.add_worksheet(title=tab_name, rows="1000", cols="20")
+        return ws
+    except: return None
+
 def load_data(key):
-    ws = get_worksheet(TABS[key])
+    tab_name = TABS[key]
+    ws = get_worksheet(tab_name)
     if ws:
-        data = ws.get_all_records()
-        df = pd.DataFrame(data)
-        if "Parti_No" in df.columns: df["Parti_No"] = df["Parti_No"].astype(str)
-        if "Uretim_Parti_No" in df.columns: df["Uretim_Parti_No"] = df["Uretim_Parti_No"].astype(str)
-        return df
-    return pd.DataFrame()
+        try:
+            data = ws.get_all_records()
+            if not data: # Veri yoksa şemayı döndür
+                return pd.DataFrame(columns=SCHEMA[tab_name])
+            
+            df = pd.DataFrame(data)
+            # Kritik sütunları string yap
+            for col in ["Parti_No", "Uretim_Parti_No", "Urun_Kodu"]:
+                if col in df.columns: df[col] = df[col].astype(str)
+            return df
+        except:
+            return pd.DataFrame(columns=SCHEMA[tab_name])
+    return pd.DataFrame(columns=SCHEMA[tab_name])
 
 def save_data(df, key):
     ws = get_worksheet(TABS[key])
     if ws:
         ws.clear()
         df = df.fillna("")
+        # Sütun başlıklarını ve veriyi yaz
         data = [df.columns.values.tolist()] + df.astype(str).values.tolist()
         ws.update(data)
 
@@ -71,71 +93,80 @@ def format_date_tr(date_obj):
     except: return str(date_obj)
 
 # --- GLOBAL LİSTELER ---
-df_ing_global = load_data("ingredients")
-if not df_ing_global.empty:
-    SOLID = df_ing_global[df_ing_global["Tip"] == "Katı"]["Bilesen_Adi"].tolist()
-    LIQUID = df_ing_global[df_ing_global["Tip"] == "Sıvı"]["Bilesen_Adi"].tolist()
-    PACKAGING = df_ing_global[df_ing_global["Tip"] == "Ambalaj"]["Bilesen_Adi"].tolist()
-    ALL_ING = SOLID + LIQUID + PACKAGING
-else: SOLID, LIQUID, PACKAGING, ALL_ING = [],[],[],[]
+try:
+    df_ing_global = load_data("ingredients")
+    if not df_ing_global.empty:
+        SOLID = df_ing_global[df_ing_global["Tip"] == "Katı"]["Bilesen_Adi"].tolist()
+        LIQUID = df_ing_global[df_ing_global["Tip"] == "Sıvı"]["Bilesen_Adi"].tolist()
+        PACKAGING = df_ing_global[df_ing_global["Tip"] == "Ambalaj"]["Bilesen_Adi"].tolist()
+        ALL_ING = SOLID + LIQUID + PACKAGING
+    else:
+        SOLID, LIQUID, PACKAGING, ALL_ING = [],[],[],[]
+except:
+    SOLID, LIQUID, PACKAGING, ALL_ING = [],[],[],[]
 
-# --- LOGIN & SIDEBAR ---
+# --- SIDEBAR ---
 st.sidebar.title("🏭 Fabrika Paneli")
 
-# GİRİŞ KONTROLÜ
 with st.sidebar:
     if not st.session_state['is_admin']:
-        st.info("👀 Misafir Modu (Sadece İzleme)")
+        st.info("👀 Misafir Modu")
         pwd = st.text_input("Yönetici Şifresi", type="password")
         if st.button("Giriş Yap"):
             if pwd == st.secrets["admin_password"]:
                 st.session_state['is_admin'] = True
-                st.success("Giriş Başarılı!")
-                st.rerun()
-            else:
-                st.error("Hatalı Şifre!")
+                st.success("Başarılı!"); st.rerun()
+            else: st.error("Hatalı Şifre!")
     else:
-        st.success("🔓 Yönetici Modu Aktif")
-        if st.button("Çıkış Yap"):
-            st.session_state['is_admin'] = False
-            st.rerun()
+        st.success("🔓 Yönetici")
+        if st.button("Çıkış"): st.session_state['is_admin'] = False; st.rerun()
     
     st.divider()
+    
+    # --- TAMİR BUTONU ---
+    if st.session_state['is_admin']:
+        st.markdown("### ⚠️ Sistem Bakım")
+        if st.button("🛠️ TABLOLARI BAŞLAT/ONAR"):
+            with st.status("Google Tabloları Hazırlanıyor...", expanded=True) as status:
+                client = get_gsheet_client()
+                sh = client.open(SHEET_NAME)
+                
+                for tab_key, tab_name in TABS.items():
+                    st.write(f"Kontrol ediliyor: {tab_name}...")
+                    try:
+                        ws = sh.worksheet(tab_name)
+                    except:
+                        ws = sh.add_worksheet(title=tab_name, rows="1000", cols="20")
+                    
+                    # Eğer boşsa başlıkları yaz
+                    if not ws.get_all_values():
+                        if tab_name in SCHEMA:
+                            ws.append_row(SCHEMA[tab_name])
+                            st.write(f"✅ {tab_name} başlıkları yazıldı.")
+                    else:
+                         st.write(f"Running: {tab_name} zaten dolu.")
+                    time.sleep(1) # API limiti yememek için bekle
+                
+                status.update(label="Kurulum Tamamlandı!", state="complete", expanded=False)
+            st.success("Tablolar hazır! Sayfayı yenileyin.")
+            time.sleep(2)
+            st.rerun()
 
-# MENÜ AYARLAMASI (Yetkiye Göre)
 if st.session_state['is_admin']:
-    # Admin Menüsü (Tam Erişim)
-    menu_options = [
-        "📝 Üretim Girişi", 
-        "📦 Stok & Limitler", 
-        "⚙️ Reçete & Hammadde",
-        "🚚 Sevkiyat & Son Ürün", 
-        "🔍 İzlenebilirlik",
-        "📊 Raporlar"
-    ]
+    menu_options = ["📝 Üretim Girişi", "📦 Stok & Limitler", "⚙️ Reçete & Hammadde", "🚚 Sevkiyat & Son Ürün", "🔍 İzlenebilirlik", "📊 Raporlar"]
 else:
-    # Misafir Menüsü (Sadece Okuma)
-    menu_options = [
-        "🔍 İzlenebilirlik",
-        "📊 Raporlar",
-        "📦 Stok Durumu (İzle)",
-        "🚚 Son Ürün (İzle)"
-    ]
+    menu_options = ["🔍 İzlenebilirlik", "📊 Raporlar", "📦 Stok Durumu (İzle)", "🚚 Son Ürün (İzle)"]
 
-menu = st.sidebar.radio("Menü Seçimi", menu_options)
+menu = st.sidebar.radio("Menü", menu_options)
 f_key = st.session_state['form_key']
 
-# -------------------------------------------------------------------
-# SAYFA İÇERİKLERİ
-# -------------------------------------------------------------------
-
-# --- ADMIN SAYFALARI ---
+# --- SAYFALAR ---
 
 if menu == "⚙️ Reçete & Hammadde":
-    st.header("⚙️ Reçete & Hammadde Yönetimi")
-    tab1, tab2 = st.tabs(["Ürün/Reçete", "Hammadde Ekle"])
+    st.header("⚙️ Reçete & Hammadde")
+    t1, t2 = st.tabs(["Ürün/Reçete", "Hammadde Ekle"])
     
-    with tab2:
+    with t2:
         c1,c2 = st.columns(2)
         nn = c1.text_input("Ad", key=f"in_{f_key}"); nt = c2.selectbox("Tip", ["Katı","Sıvı","Ambalaj"], key=f"it_{f_key}")
         if st.button("Ekle", key=f"bi_{f_key}"):
@@ -149,7 +180,7 @@ if menu == "⚙️ Reçete & Hammadde":
                 st.success("Eklendi"); reset_forms(); st.rerun()
         st.dataframe(df_ing_global)
 
-    with tab1:
+    with t1:
         prods = load_data("products")
         op = st.radio("İşlem", ["Yeni", "Düzenle"], horizontal=True, key=f"op_{f_key}")
         d_vals = {"Urun_Kodu":"", "Urun_Adi":"", "Net_Paket_KG":10.0, "Raf_Omru_Ay":24}
@@ -193,7 +224,7 @@ if menu == "⚙️ Reçete & Hammadde":
                 try: return " | ".join([f"{k} ({v*100 if p else v}{'%' if p else 'kg'})" for k,v in ast.literal_eval(str(j)).items() if v>0])
                 except: return "-"
             dv = prods.copy(); dv["Katı"]=dv["Recete_Kati_JSON"].apply(lambda x:pr(x,True)); dv["Sıvı"]=dv["Recete_Sivi_JSON"].apply(lambda x:pr(x,False))
-            st.dataframe(dv[["Urun_Kodu","Urun_Adi","Net_Paket_KG","Katı","Sıvı"]])
+            st.dataframe(dv[["Urun_Kodu","Urun_Adi","Net_Paket_KG","Katı","Sıvı"]], use_container_width=True)
 
 elif menu == "📦 Stok & Limitler":
     st.header("📦 Stok Yönetimi")
@@ -226,7 +257,9 @@ elif menu == "📦 Stok & Limitler":
         with st.form("lf"):
             upd=[]
             for i, ig in enumerate(ALL_ING):
-                cur = lim[lim["Hammadde"]==ig]["Kritik_Limit_KG"].sum()
+                if not lim.empty:
+                    cur = lim[lim["Hammadde"]==ig]["Kritik_Limit_KG"].sum()
+                else: cur=0.0
                 v = st.number_input(f"{ig}", float(cur))
                 upd.append({"Hammadde":ig, "Kritik_Limit_KG":v})
             if st.form_submit_button("Güncelle"): save_data(pd.DataFrame(upd), "limits"); st.success("OK"); st.rerun()
@@ -362,8 +395,6 @@ elif menu == "🚚 Sevkiyat & Son Ürün":
             v["Paket"]=v["Kalan_Net_KG"]/v["Paket_Agirligi"]
             st.dataframe(v[["Urun_Kodu","Uretim_Parti_No","Tarih","SKT","Kalan_Net_KG","Paket"]])
 
-# --- MİSAFİR/ADMIN ORTAK GÖRÜNEN SAYFALAR ---
-
 elif menu == "🔍 İzlenebilirlik":
     st.header("🔍 İzlenebilirlik")
     prod=load_data("production"); fg=load_data("finished_goods")
@@ -404,7 +435,6 @@ elif menu == "📊 Raporlar":
         prod["Tarih"]=prod["Tarih"].apply(format_date_tr)
         st.dataframe(prod[fin].style.format({"Katı %":"{:.2f}%","Sıvı %":"{:.2f}%","Fire_Kati_KG":"{:.2f}","Amb (gr/pkt)":"{:.1f} gr"}))
 
-# Misafir Menüsü Özel Sayfalar (Admin zaten görüyor)
 elif menu == "📦 Stok Durumu (İzle)":
     st.header("📦 Stok Durumu")
     inv = load_data("inventory")
