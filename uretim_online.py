@@ -7,7 +7,7 @@ import ast
 import time
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Online Üretim (V26 Final)", layout="wide", page_icon="🏭")
+st.set_page_config(page_title="Online Üretim (V27 Final)", layout="wide", page_icon="🏭")
 
 # --- GOOGLE BAĞLANTISI ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -69,8 +69,9 @@ def load_data(key):
 
 def save_data(df, key):
     """
-    V26: JSON Serializer Hatası İçin Kesin Çözüm
-    Pandas'ı aradan çıkarıp veriyi saf Python listesine çeviriyoruz.
+    V27: USER_ENTERED Modu ile Kayıt
+    Bu mod, veriyi sanki kullanıcı eliyle yazıyormuş gibi gönderir.
+    '0', 0, '0.0' gibi değerlerin neden olduğu Invalid Value hatasını kesin çözer.
     """
     ws = get_worksheet(TABS[key])
     if ws:
@@ -83,31 +84,22 @@ def save_data(df, key):
             if c not in df.columns: df[c] = ""
         df = df[expected_cols]
         
-        # 2. Başlıklar
-        headers = [str(c) for c in df.columns]
+        # 2. String Dönüşümü (Garantileme)
+        df = df.fillna("").astype(str)
         
-        # 3. Veriyi Satır Satır İşle (En güvenli yöntem)
-        # Her bir hücreyi manuel olarak string'e çeviriyoruz.
-        raw_values = df.values.tolist()
-        cleaned_values = []
+        # 3. Listeye Çevir
+        final_data = [df.columns.values.tolist()] + df.values.tolist()
         
-        for row in raw_values:
-            cleaned_row = []
-            for item in row:
-                # Eğer NaN/None ise boş string
-                if pd.isna(item) or item is None:
-                    cleaned_row.append("")
-                # Eğer tarih ise string yap
-                elif isinstance(item, (datetime, date)):
-                    cleaned_row.append(item.strftime("%Y-%m-%d"))
-                # Diğer her şeyi (sayı, float, int) stringe zorla
-                else:
-                    cleaned_row.append(str(item))
-            cleaned_values.append(cleaned_row)
-        
-        # 4. Gönder
-        final_data = [headers] + cleaned_values
-        ws.update(final_data)
+        # 4. USER_ENTERED Modu ile Güncelle (Hata Çözümü Burası)
+        try:
+            ws.update(
+                range_name='A1', 
+                values=final_data, 
+                value_input_option='USER_ENTERED'
+            )
+        except TypeError:
+            # Gspread eski sürümse fallback
+            ws.update(final_data, value_input_option='USER_ENTERED')
 
 # --- FORMATLAR & RESET ---
 if 'form_key' not in st.session_state: st.session_state['form_key'] = 0
@@ -122,8 +114,7 @@ def format_date_tr(date_obj):
 try:
     df_ing_global = load_data("ingredients")
     if not df_ing_global.empty:
-        # Tiplerin string olduğundan emin ol
-        df_ing_global["Tip"] = df_ing_global["Tip"].astype(str)
+        df_ing_global["Tip"] = df_ing_global["Tip"].astype(str) # Garanti
         SOLID = df_ing_global[df_ing_global["Tip"] == "Katı"]["Bilesen_Adi"].tolist()
         LIQUID = df_ing_global[df_ing_global["Tip"] == "Sıvı"]["Bilesen_Adi"].tolist()
         PACKAGING = df_ing_global[df_ing_global["Tip"] == "Ambalaj"]["Bilesen_Adi"].tolist()
@@ -181,14 +172,13 @@ if menu == "⚙️ Reçete & Hammadde":
         nn = c1.text_input("Ad", key=f"in_{f_key}"); nt = c2.selectbox("Tip", ["Katı","Sıvı","Ambalaj"], key=f"it_{f_key}")
         if st.button("Ekle", key=f"bi_{f_key}"):
             if nn and nn not in ALL_ING:
-                # 1. Hammadde Ekle
                 df = load_data("ingredients")
-                # String olarak ekliyoruz (str(nn))
+                # Yeni satır ekle
                 new_row = pd.DataFrame([[str(nn), str(nt)]], columns=["Bilesen_Adi","Tip"])
                 df = pd.concat([df, new_row], ignore_index=True)
                 save_data(df, "ingredients")
                 
-                # 2. Limit Ekle (Sıfırı string olarak veriyoruz "0")
+                # Limit ekle (USER_ENTERED sayesinde "0" sorun çıkarmaz)
                 dfl = load_data("limits")
                 new_lim = pd.DataFrame([[str(nn), "0"]], columns=["Hammadde","Kritik_Limit_KG"])
                 dfl = pd.concat([dfl, new_lim], ignore_index=True)
@@ -410,7 +400,7 @@ elif menu == "🚚 Sevkiyat & Son Ürün":
         if not fg.empty:
             v=fg[fg["Kalan_Net_KG"]>0].copy()
             v["Tarih"]=v["Uretim_Tarihi"].apply(format_date_tr); v["SKT"]=v["SKT"].apply(format_date_tr)
-            v["Paket"]=v["Kalan_Net_KG"]/pd.to_numeric(v["Paket_Agirligi"], errors='coerce')
+            v["Paket"]=v["Kalan_Net_KG"]/v["Paket_Agirligi"]
             st.dataframe(v[["Urun_Kodu","Uretim_Parti_No","Tarih","SKT","Kalan_Net_KG","Paket"]])
 
 elif menu == "🔍 İzlenebilirlik":
