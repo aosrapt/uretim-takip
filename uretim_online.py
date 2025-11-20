@@ -209,7 +209,8 @@ if menu == "⚙️ Reçete & Hammadde":
             del_logs = load_data("deletion_logs")
             if not del_logs.empty:
                 st.subheader("Silme Logları")
-                st.dataframe(del_logs)
+                del_logs["Tarih"]=del_logs["Tarih"].apply(format_date_tr)
+                st.dataframe(del_logs[["Tarih", "Tur", "Detay", "Neden"]])
 
     with t1:
         prods = load_data("products")
@@ -260,8 +261,18 @@ if menu == "⚙️ Reçete & Hammadde":
 
 elif menu == "📦 Hammadde Stok":
     st.header("📦 Hammadde Stok")
-    t1,t2,t3 = st.tabs(["Giriş", "Sil", "Limit"])
     inv = load_data("inventory"); lim = load_data("limits")
+    left_col, right_col = st.columns([3,1])
+    with right_col:
+        # Uyarılar
+        if not inv.empty and not lim.empty:
+            merged = inv.merge(lim, left_on="Hammadde", right_on="Hammadde")
+            low_stock = merged[merged["Kalan_Miktar"] < merged["Kritik_Limit_KG"]]
+            if not low_stock.empty:
+                st.warning("Düşük Stok Uyarısı:")
+                st.dataframe(low_stock[["Hammadde", "Parti_No", "Kalan_Miktar", "Kritik_Limit_KG"]])
+    with left_col:
+        t1,t2,t3 = st.tabs(["Giriş", "Sil", "Limit"])
     
     with t1:
         c1,c2,c3=st.columns(3); c4,c5=st.columns(2)
@@ -300,7 +311,8 @@ elif menu == "📦 Hammadde Stok":
             del_logs = load_data("deletion_logs")
             if not del_logs.empty:
                 st.subheader("Silme Logları")
-                st.dataframe(del_logs)
+                del_logs["Tarih"]=del_logs["Tarih"].apply(format_date_tr)
+                st.dataframe(del_logs[["Tarih", "Tur", "Detay", "Neden"]])
             
     with t3:
         with st.form("lf"):
@@ -318,13 +330,6 @@ elif menu == "📦 Hammadde Stok":
                 ws.update([ndf.columns.values.tolist()] + ndf.astype(str).values.tolist())
                 clear_cache()
                 st.success("OK"); st.rerun()
-        # Uyarılar
-        if not inv.empty and not lim.empty:
-            merged = inv.merge(lim, left_on="Hammadde", right_on="Hammadde")
-            low_stock = merged[merged["Kalan_Miktar"] < merged["Kritik_Limit_KG"]]
-            if not low_stock.empty:
-                st.warning("Düşük Stok Uyarısı:")
-                st.dataframe(low_stock[["Hammadde", "Parti_No", "Kalan_Miktar", "Kritik_Limit_KG"]])
 
 elif menu == "📝 Üretim Girişi":
     st.header("📝 Üretim Kaydı")
