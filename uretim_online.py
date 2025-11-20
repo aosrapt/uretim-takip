@@ -269,8 +269,8 @@ elif menu == "📦 Hammadde Stok":
             merged = inv.merge(lim, left_on="Hammadde", right_on="Hammadde")
             low_stock = merged[merged["Kalan_Miktar"] < merged["Kritik_Limit_KG"]]
             if not low_stock.empty:
-                st.warning("Düşük Stok Uyarısı:")
-                st.dataframe(low_stock[["Hammadde", "Parti_No", "Kalan_Miktar", "Kritik_Limit_KG"]])
+                low_names = ', '.join(low_stock['Hammadde'].unique())
+                st.warning(f"Düşük Stok Uyarısı: {low_names}")
     with left_col:
         t1,t2,t3 = st.tabs(["Giriş", "Sil", "Limit"])
     
