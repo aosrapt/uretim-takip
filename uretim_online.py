@@ -8,7 +8,7 @@ import time
 import ast
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Online Üretim (V44 Turbo)", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="AACFactoryOps", layout="wide", page_icon="logo.png")
 
 # --- GOOGLE BAĞLANTISI ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -538,3 +538,4 @@ elif menu == "📦 Son Ürün Stok (İzle)":
         v["Tarih"]=v["Uretim_Tarihi"].apply(format_date_tr); v["SKT"]=v["SKT"].apply(format_date_tr)
         v["Paket"]=v["Kalan_Net_KG"]/pd.to_numeric(v["Paket_Agirligi"], errors='coerce')
         st.dataframe(v[["Urun_Kodu","Uretim_Parti_No","Tarih","SKT","Kalan_Net_KG","Paket"]])
+
