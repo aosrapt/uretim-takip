@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import pandas as pd
 import gspread
@@ -186,7 +187,10 @@ if menu == "⚙️ Reçete & Hammadde":
                 # V37: Sadece yeni satır ekle (Append)
                 add_row_to_sheet([nn, nt], "ingredients")
                 add_row_to_sheet([nn, 0], "limits")
-                st.success("Eklendi"); reset_forms(); st.rerun()
+                st.success("Eklendi")
+                time.sleep(1)  # Google Sheets senkronizasyonu için kısa gecikme
+                reset_forms()
+                st.rerun()
         st.dataframe(df_ing_global)
 
     with t1:
@@ -204,7 +208,7 @@ if menu == "⚙️ Reçete & Hammadde":
             except: pass
             uid = sel
 
-        with st.form("pf"):
+        with st.form(key=f"pf_{f_key}"):
             c1,c2,c3,c4=st.columns(4)
             pc=c1.text_input("Kod", d_vals.get("Urun_Kodu"), disabled=op=="Düzenle", key=f"pc_{uid}_{f_key}")
             pn=c2.text_input("Ad", d_vals.get("Urun_Adi"), key=f"pn_{uid}_{f_key}")
@@ -213,11 +217,11 @@ if menu == "⚙️ Reçete & Hammadde":
             
             st.subheader("Katı %"); ns={}; tot=0.0; cls=st.columns(4)
             for i,ing in enumerate(SOLID):
-                v = cls[i%4].number_input(f"{ing}", 0.0, 100.0, float(s_sol.get(ing,0)*100), 0.001, format="%.3f", key=f"s_{ing}_{uid}_{f_key}")
+                v = cls[i%4].number_input(f"{ing}", min_value=0.0, max_value=100.0, value=float(s_sol.get(ing,0)*100), step=0.001, format="%.3f", key=f"s_{ing}_{uid}_{f_key}_{i}")
                 ns[ing]=v/100; tot+=v
             st.caption(f"Toplam: %{tot:.3f}")
             st.subheader("Sıvı KG/100"); nl={}
-            for l in LIQUID: nl[l] = st.number_input(f"{l}", float(s_liq.get(l,0)), key=f"l_{l}_{uid}_{f_key}")
+            for l in LIQUID: nl[l] = st.number_input(f"{l}", value=float(s_liq.get(l,0)), key=f"l_{l}_{uid}_{f_key}")
             
             if st.form_submit_button("Kaydet"):
                 if abs(tot-100)>0.001: st.error("Katı toplam %100 olmalı")
@@ -488,3 +492,4 @@ elif menu == "🚚 Son Ürün (İzle)":
         v["Tarih"] = v["Uretim_Tarihi"].apply(format_date_tr)
         v["SKT"] = v["SKT"].apply(format_date_tr)
         st.dataframe(v[["Urun_Kodu", "Uretim_Parti_No", "Tarih", "SKT", "Kalan_Net_KG"]])
+```
