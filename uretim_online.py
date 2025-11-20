@@ -490,5 +490,4 @@ elif menu == "🚚 Son Ürün (İzle)":
         v = fg[fg["Kalan_Net_KG"] > 0].copy()
         v["Tarih"] = v["Uretim_Tarihi"].apply(format_date_tr)
         v["SKT"] = v["SKT"].apply(format_date_tr)
-        st.dataframe(v[["Urun_Kodu", "Uretim_Parti_No", "Tarih", "SKT", "Kalan_Net_KG"]]
-
+        st.dataframe(v[["Urun_Kodu", "Uretim_Parti_No", "Tarih", "SKT", "Kalan_Net_KG"]])
