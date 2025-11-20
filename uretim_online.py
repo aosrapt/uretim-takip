@@ -3,18 +3,17 @@ import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, timedelta, date
-import ast
 import time
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Online Üretim (V33 Final)", layout="wide", page_icon="🏭")
+st.set_page_config(page_title="Online Üretim (V34)", layout="wide", page_icon="🏭")
 
 # --- GOOGLE BAĞLANTISI ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 SHEET_NAME = "Uretim_Takip_Sistemi"
 
+@st.cache_resource
 def get_gsheet_client():
-    # Cache kullanmıyoruz, her işlemde taze bağlantı (Hata önlemek için)
     try:
         if "gcp_service_account" in st.secrets:
             creds_dict = dict(st.secrets["gcp_service_account"])
@@ -53,56 +52,56 @@ def get_worksheet(tab_name):
     except: return None
 
 def load_data(key):
+    """Veriyi çeker, boşsa şemayı oluşturur."""
     tab_name = TABS[key]
-    ws = get_worksheet(tab_name)
     expected_cols = SCHEMA[tab_name]
+    ws = get_worksheet(tab_name)
     
     if ws:
         try:
-            vals = ws.get_all_values()
-            if not vals: return pd.DataFrame(columns=expected_cols)
+            data = ws.get_all_records()
+            df = pd.DataFrame(data)
+            if df.empty: return pd.DataFrame(columns=expected_cols)
             
-            # İlk satır başlık
-            headers = vals[0]
-            data = vals[1:]
+            # Eksik kolonları tamamla
+            for col in expected_cols:
+                if col not in df.columns: df[col] = ""
             
-            df = pd.DataFrame(data, columns=headers)
-            
-            # Eksik kolon tamamlama
-            for c in expected_cols:
-                if c not in df.columns: df[c] = ""
-                
+            # Her şeyi string yap (Garanti)
+            df = df.astype(str)
             return df
-        except: return pd.DataFrame(columns=expected_cols)
+        except: 
+            return pd.DataFrame(columns=expected_cols)
     return pd.DataFrame(columns=expected_cols)
 
-def save_data_full_rewrite(df, key):
+def save_data(df, key):
     """
-    V33: TAM YAZMA (APPEND YOK)
-    Append komutu ID hatası verdiği için, tabloyu temizleyip baştan yazıyoruz.
-    Bu işlem ID hatasını imkansız kılar.
+    V34: TAM YAZIM (NO APPEND)
+    Bu fonksiyon tabloyu silip baştan yazar.
+    'No grid with id: 0' hatasını VERMEZ çünkü ID kullanmaz.
     """
-    tab_name = TABS[key]
-    ws = get_worksheet(tab_name)
-    
+    ws = get_worksheet(TABS[key])
     if ws:
-        # 1. Şema Eşitle
+        ws.clear()
+        
+        tab_name = TABS[key]
         expected_cols = SCHEMA[tab_name]
+        
+        # Sütunları eşitle
         for c in expected_cols:
             if c not in df.columns: df[c] = ""
         df = df[expected_cols]
         
-        # 2. Her şeyi String Yap
+        # Stringe çevir
         df = df.fillna("").astype(str)
         
-        # 3. Listeye Çevir
+        # Listeye çevir
         headers = df.columns.tolist()
         values = df.values.tolist()
         final_data = [headers] + values
         
-        # 4. Temizle ve Yaz
-        ws.clear()
-        ws.update(final_data, value_input_option='USER_ENTERED')
+        # Yaz
+        ws.update(final_data, value_input_option='RAW')
 
 # --- FORMATLAR & RESET ---
 if 'form_key' not in st.session_state: st.session_state['form_key'] = 0
@@ -116,7 +115,7 @@ def format_date_tr(date_obj):
 # --- GLOBAL LİSTELER ---
 try:
     df_ing_global = load_data("ingredients")
-    if not df_ing_global.empty and "Bilesen_Adi" in df_ing_global.columns:
+    if not df_ing_global.empty:
         SOLID = df_ing_global[df_ing_global["Tip"] == "Katı"]["Bilesen_Adi"].tolist()
         LIQUID = df_ing_global[df_ing_global["Tip"] == "Sıvı"]["Bilesen_Adi"].tolist()
         PACKAGING = df_ing_global[df_ing_global["Tip"] == "Ambalaj"]["Bilesen_Adi"].tolist()
@@ -143,20 +142,17 @@ with st.sidebar:
     st.divider()
     
     if st.session_state['is_admin']:
-        if st.button("🛠️ TABLOLARI SIFIRLA (BAŞLAT)"):
-            with st.spinner("Tablolar yeniden oluşturuluyor..."):
+        if st.button("🛠️ TABLOLARI ONAR"):
+            with st.spinner("Onarılıyor..."):
                 client = get_gsheet_client()
                 sh = client.open(SHEET_NAME)
                 for t_key, t_name in TABS.items():
                     try: ws = sh.worksheet(t_name)
                     except: ws = sh.add_worksheet(title=t_name, rows="1000", cols="20")
-                    
-                    # İçeriği temizle ve başlıkları bas
-                    ws.clear()
-                    if t_name in SCHEMA:
-                        ws.append_row(SCHEMA[t_name])
+                    if not ws.get_all_values(): 
+                        if t_name in SCHEMA: ws.append_row(SCHEMA[t_name])
                     time.sleep(0.5)
-            st.success("Sıfırlama Tamamlandı!"); time.sleep(1); st.rerun()
+            st.success("Tamamlandı!"); time.sleep(1); st.rerun()
 
 if st.session_state['is_admin']:
     menu_options = ["📝 Üretim Girişi", "📦 Stok & Limitler", "⚙️ Reçete & Hammadde", "🚚 Sevkiyat & Son Ürün", "🔍 İzlenebilirlik", "📊 Raporlar"]
@@ -177,20 +173,17 @@ if menu == "⚙️ Reçete & Hammadde":
         nn = c1.text_input("Ad", key=f"in_{f_key}"); nt = c2.selectbox("Tip", ["Katı","Sıvı","Ambalaj"], key=f"it_{f_key}")
         if st.button("Ekle", key=f"bi_{f_key}"):
             if nn and nn not in ALL_ING:
-                # 1. Hammadde Tablosunu Oku
+                # 1. Hammadde (Oku -> Ekle -> Full Yaz)
                 df = load_data("ingredients")
-                # Yeni satırı DataFrame'e ekle
                 new_row = pd.DataFrame([[str(nn), str(nt)]], columns=["Bilesen_Adi","Tip"])
                 df = pd.concat([df, new_row], ignore_index=True)
-                # TÜM TABLOYU BAŞTAN YAZ (Hata Yok)
-                save_data_full_rewrite(df, "ingredients")
+                save_data(df, "ingredients")
                 
-                # 2. Limit Tablosunu Oku
+                # 2. Limit (Oku -> Ekle -> Full Yaz)
                 dfl = load_data("limits")
                 new_lim = pd.DataFrame([[str(nn), "0"]], columns=["Hammadde","Kritik_Limit_KG"])
                 dfl = pd.concat([dfl, new_lim], ignore_index=True)
-                # TÜM TABLOYU BAŞTAN YAZ
-                save_data_full_rewrite(dfl, "limits")
+                save_data(dfl, "limits")
                 
                 st.success("Eklendi"); reset_forms(); st.rerun()
         st.dataframe(df_ing_global)
@@ -232,7 +225,7 @@ if menu == "⚙️ Reçete & Hammadde":
                     nr = pd.DataFrame([{"Urun_Kodu":str(pc), "Urun_Adi":str(pn), "Net_Paket_KG":str(pnt), "Raf_Omru_Ay":str(psk), "Recete_Kati_JSON":str(ns), "Recete_Sivi_JSON":str(nl)}])
                     if op=="Düzenle": prods = prods[prods["Urun_Kodu"]!=str(pc)]
                     prods = pd.concat([prods, nr], ignore_index=True)
-                    save_data_full_rewrite(prods, "products"); st.success("OK"); reset_forms(); st.rerun()
+                    save_data(prods, "products"); st.success("OK"); reset_forms(); st.rerun()
         
         if not prods.empty:
             def pr(j,p): 
@@ -255,9 +248,10 @@ elif menu == "📦 Stok & Limitler":
         amb=c5.number_input("Birim Gr", key=f"sa_{f_key}") if ing in PACKAGING else 0.0
         if st.button("Kaydet", key=f"bs_{f_key}"):
             sid = f"STK-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            # Oku -> Ekle -> Full Yaz
             nr = pd.DataFrame([{"Stok_ID":str(sid), "Tarih":str(dt), "Hammadde":str(ing), "Parti_No":str(lot), "Giris_Miktari":str(qty), "Kalan_Miktar":str(qty), "Birim":"KG", "Ambalaj_Birim_Gr":str(amb)}])
             inv = pd.concat([inv, nr], ignore_index=True)
-            save_data_full_rewrite(inv, "inventory")
+            save_data(inv, "inventory")
             st.success("OK"); reset_forms(); st.rerun()
         if not inv.empty:
             inv["Kalan_Miktar"]=pd.to_numeric(inv["Kalan_Miktar"], errors='coerce')
@@ -269,7 +263,7 @@ elif menu == "📦 Stok & Limitler":
             sel = st.selectbox("Seç", opts, format_func=lambda x:x[1], key="dsl")
             if st.button("Sil"): 
                 inv=inv.drop(sel[0])
-                save_data_full_rewrite(inv, "inventory")
+                save_data(inv, "inventory")
                 st.success("OK"); st.rerun()
             
     with t3:
@@ -283,7 +277,7 @@ elif menu == "📦 Stok & Limitler":
                 v = st.number_input(f"{ig}", float(cur))
                 upd.append({"Hammadde":str(ig), "Kritik_Limit_KG":str(v)})
             if st.form_submit_button("Güncelle"): 
-                save_data_full_rewrite(pd.DataFrame(upd), "limits")
+                save_data(pd.DataFrame(upd), "limits")
                 st.success("OK"); st.rerun()
 
 elif menu == "📝 Üretim Girişi":
@@ -372,13 +366,13 @@ elif menu == "📝 Üretim Girişi":
                         if msk.any(): idx=inv[msk].index[0]; inv.at[idx,"Kalan_Miktar"]=float(inv.at[idx,"Kalan_Miktar"])-float(e['qty'])
             
             prod=pd.concat([prod, pd.DataFrame([log])], ignore_index=True)
-            save_data_full_rewrite(prod, "production")
-            save_data_full_rewrite(inv, "inventory")
+            save_data(prod, "production")
+            save_data(inv, "inventory")
             
             fg=load_data("finished_goods")
             nfg=pd.DataFrame([{"Uretim_ID":str(uid), "Urun_Kodu":str(psel), "Uretim_Parti_No":str(plot), "Uretim_Tarihi":str(pdts), "SKT":str(skt), "Baslangic_Net_KG":str(nkg), "Kalan_Net_KG":str(nkg), "Paket_Agirligi":str(curr["Net_Paket_KG"])}])
             fg=pd.concat([fg, nfg], ignore_index=True)
-            save_data_full_rewrite(fg, "finished_goods")
+            save_data(fg, "finished_goods")
             
             st.success("Kaydedildi"); reset_forms(); st.rerun()
 
@@ -406,8 +400,7 @@ elif menu == "🚚 Sevkiyat & Son Ürün":
                     fg.at[si, "Kalan_Net_KG"]-=kg
                     ns=pd.DataFrame([{"Sevkiyat_ID":f"S-{datetime.now().strftime('%Y%m%d%H%M')}", "Tarih":str(datetime.now()), "Uretim_ID":str(sr["Uretim_ID"]), "Musteri":str(cu), "Tip":str(ty), "Sevk_Edilen_KG":str(kg), "Aciklama":str(nt)}])
                     sh=pd.concat([sh, ns], ignore_index=True)
-                    save_data_full_rewrite(sh, "shipments")
-                    save_data_full_rewrite(fg, "finished_goods")
+                    save_data(sh, "shipments"); save_data(fg, "finished_goods")
                     st.success("Kaydedildi"); reset_forms(); st.rerun()
             else: st.info("Stok yok")
     with t2:
@@ -455,7 +448,6 @@ elif menu == "📊 Raporlar":
     if not prod.empty:
         def sd(n,d): return n/d*100 if d>0 else 0
         
-        # Güvenli dönüşümler
         prod = prod.fillna(0)
         net_kg = pd.to_numeric(prod.get("Uretilen_Net_KG", 0), errors='coerce').fillna(0)
         fk = pd.to_numeric(prod.get("Fire_Kati_KG", 0), errors='coerce').fillna(0)
