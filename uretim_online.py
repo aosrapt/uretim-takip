@@ -262,17 +262,14 @@ if menu == "⚙️ Reçete & Hammadde":
 elif menu == "📦 Hammadde Stok":
     st.header("📦 Hammadde Stok")
     inv = load_data("inventory"); lim = load_data("limits")
-    left_col, right_col = st.columns([3,1])
-    with right_col:
-        # Uyarılar
-        if not inv.empty and not lim.empty:
-            merged = inv.merge(lim, left_on="Hammadde", right_on="Hammadde")
-            low_stock = merged[merged["Kalan_Miktar"] < merged["Kritik_Limit_KG"]]
-            if not low_stock.empty:
-                low_names = ', '.join(low_stock['Hammadde'].unique())
-                st.warning(f"Düşük Stok Uyarısı: {low_names}")
-    with left_col:
-        t1,t2,t3 = st.tabs(["Giriş", "Sil", "Limit"])
+    # Uyarılar
+    if not inv.empty and not lim.empty:
+        merged = inv.merge(lim, left_on="Hammadde", right_on="Hammadde")
+        low_stock = merged[merged["Kalan_Miktar"] < merged["Kritik_Limit_KG"]]
+        if not low_stock.empty:
+            low_names = ', '.join(low_stock['Hammadde'].unique())
+            st.warning(f"Düşük Stok Uyarısı: {low_names}")
+    t1,t2,t3 = st.tabs(["Giriş", "Sil", "Limit"])
     
     with t1:
         c1,c2,c3=st.columns(3); c4,c5=st.columns(2)
