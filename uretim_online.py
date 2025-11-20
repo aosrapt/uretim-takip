@@ -231,8 +231,8 @@ if menu == "⚙️ Reçete & Hammadde":
             c1,c2,c3,c4=st.columns(4)
             pc=c1.text_input("Kod", d_vals.get("Urun_Kodu"), disabled=op=="Düzenle", key=f"pc_{uid}_{f_key}")
             pn=c2.text_input("Ad", d_vals.get("Urun_Adi"), key=f"pn_{uid}_{f_key}")
-            pnt=c3.number_input("Net KG", float(d_vals.get("Net_Paket_KG", 10)), key=f"pnt_{uid}_{f_key}")
-            psk=c4.number_input("Raf (Ay)", int(d_vals.get("Raf_Omru_Ay", 24)), key=f"psk_{uid}_{f_key}")
+            pnt=c3.number_input("Net KG", min_value=0.0, value=float(d_vals.get("Net_Paket_KG", 10)), key=f"pnt_{uid}_{f_key}")
+            psk=c4.number_input("Raf (Ay)", min_value=0, value=int(d_vals.get("Raf_Omru_Ay", 24)), key=f"psk_{uid}_{f_key}")
             
             st.subheader("Katı %"); ns={}; tot=0.0; cls=st.columns(4)
             for i,ing in enumerate(SOLID):
@@ -240,7 +240,7 @@ if menu == "⚙️ Reçete & Hammadde":
                 ns[ing]=v/100; tot+=v
             st.caption(f"Toplam: %{tot:.3f}")
             st.subheader("Sıvı KG/100"); nl={}
-            for l in LIQUID: nl[l] = st.number_input(f"{l}", value=float(s_liq.get(l,0)), key=f"l_{l}_{uid}_{f_key}")
+            for l in LIQUID: nl[l] = st.number_input(f"{l}", min_value=0.0, value=float(s_liq.get(l,0)), key=f"l_{l}_{uid}_{f_key}")
             
             if st.form_submit_button("Kaydet"):
                 if abs(tot-100)>0.001: st.error("Katı toplam %100 olmalı")
@@ -538,4 +538,3 @@ elif menu == "📦 Son Ürün Stok (İzle)":
         v["Tarih"]=v["Uretim_Tarihi"].apply(format_date_tr); v["SKT"]=v["SKT"].apply(format_date_tr)
         v["Paket"]=v["Kalan_Net_KG"]/pd.to_numeric(v["Paket_Agirligi"], errors='coerce')
         st.dataframe(v[["Urun_Kodu","Uretim_Parti_No","Tarih","SKT","Kalan_Net_KG","Paket"]])
-
