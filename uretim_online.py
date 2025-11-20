@@ -2,12 +2,13 @@ import streamlit as st
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from gspread_dataframe import set_with_dataframe, get_as_dataframe
 from datetime import datetime, timedelta, date
 import time
 import ast
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Online Üretim (V40)", layout="wide", page_icon="✅")
+st.set_page_config(page_title="Online Üretim (V41 Turbo)", layout="wide", page_icon="🚀")
 
 # --- GOOGLE BAĞLANTISI ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -23,7 +24,7 @@ def get_gsheet_client():
             creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", SCOPE)
         return gspread.authorize(creds)
     except Exception as e:
-        st.error(f"Bağlantı Hatası: {e}"); return None
+        return None
 
 # --- TABLO ŞEMASI ---
 SCHEMA = {
@@ -52,29 +53,40 @@ def get_worksheet(tab_name):
         return ws
     except: return None
 
-def load_data(key):
+# --- CACHED DATA LOADING (PERFORMANS İÇİN) ---
+# ttl=60: Veriyi 60 saniye hafızada tutar, sürekli Google'a sormaz.
+@st.cache_data(ttl=60)
+def load_data_cached(key):
     tab_name = TABS[key]
     ws = get_worksheet(tab_name)
-    expected_cols = SCHEMA[tab_name]
+    cols = SCHEMA[tab_name]
     
     if ws:
         try:
-            data = ws.get_all_records()
-            df = pd.DataFrame(data)
-            if df.empty: return pd.DataFrame(columns=expected_cols)
+            df = get_as_dataframe(ws, evaluate_formulas=True, usecols=cols)
+            df = df.dropna(how='all') 
+            df = df.fillna("")
             
-            # String dönüşümleri (Hata önleyici)
-            for col in ["Parti_No", "Uretim_Parti_No", "Urun_Kodu"]:
-                if col in df.columns: df[col] = df[col].astype(str)
+            # Kritik kolonları string yap
+            for c in ["Parti_No", "Urun_Kodu", "Uretim_Parti_No", "Hammadde"]:
+                if c in df.columns: df[c] = df[c].astype(str)
+            
+            # Sayısal alanları garanti et (Hata önleyici)
+            if "Kalan_Miktar" in df.columns:
+                df["Kalan_Miktar"] = pd.to_numeric(df["Kalan_Miktar"], errors='coerce').fillna(0.0)
+            
+            for c in cols:
+                if c not in df.columns: df[c] = ""
             
             return df
-        except: return pd.DataFrame(columns=expected_cols)
-    return pd.DataFrame(columns=expected_cols)
+        except: return pd.DataFrame(columns=cols)
+    return pd.DataFrame(columns=cols)
+
+def clear_cache():
+    """Kayıt işleminden sonra veriyi tazelemek için"""
+    st.cache_data.clear()
 
 def add_row_to_sheet(row_data, key):
-    """
-    GROK'UN YAZDIĞI VE ÇALIŞAN FONKSİYON
-    """
     ws = get_worksheet(TABS[key])
     if ws:
         clean_row = []
@@ -82,11 +94,9 @@ def add_row_to_sheet(row_data, key):
             if item is None: clean_row.append("")
             elif isinstance(item, (datetime, date)): clean_row.append(item.strftime("%Y-%m-%d"))
             else: clean_row.append(item)
-        
         ws.append_row(clean_row, value_input_option='USER_ENTERED')
 
 def update_cell_in_sheet(key, unique_col_name, unique_val, target_col_name, new_val):
-    """Stok düşme vb. güncellemeler için"""
     ws = get_worksheet(TABS[key])
     if ws:
         try:
@@ -95,7 +105,6 @@ def update_cell_in_sheet(key, unique_col_name, unique_val, target_col_name, new_
             df[unique_col_name] = df[unique_col_name].astype(str)
             unique_val = str(unique_val)
             matches = df.index[df[unique_col_name] == unique_val].tolist()
-            
             if matches:
                 row_idx = matches[0] + 2
                 col_idx = df.columns.get_loc(target_col_name) + 1
@@ -103,22 +112,34 @@ def update_cell_in_sheet(key, unique_col_name, unique_val, target_col_name, new_
         except Exception as e:
             print(f"Update Hatası: {e}")
 
-# --- FORMATLAR ---
+def save_full_df(df, key):
+    """Full rewrite for products/limits"""
+    ws = get_worksheet(TABS[key])
+    if ws:
+        ws.clear()
+        cols = SCHEMA[TABS[key]]
+        for c in cols: 
+            if c not in df.columns: df[c] = ""
+        df = df[cols]
+        df = df.fillna("")
+        set_with_dataframe(ws, df)
+
+# --- FORMATLAR & RESET ---
 if 'form_key' not in st.session_state: st.session_state['form_key'] = 0
 if 'is_admin' not in st.session_state: st.session_state['is_admin'] = False
 def reset_forms(): st.session_state['form_key'] += 1
 def format_date_tr(date_obj):
-    if pd.isna(date_obj) or str(date_obj)=="": return "-"
+    if pd.isna(date_obj) or str(date_obj)=="" or str(date_obj)=="nan": return "-"
     try: return pd.to_datetime(date_obj).strftime("%d/%m/%Y")
     except: return str(date_obj)
 
 # --- GLOBAL LİSTELER ---
 try:
-    df_ing_global = load_data("ingredients")
-    if not df_ing_global.empty:
-        SOLID = df_ing_global[df_ing_global["Tip"] == "Katı"]["Bilesen_Adi"].tolist()
-        LIQUID = df_ing_global[df_ing_global["Tip"] == "Sıvı"]["Bilesen_Adi"].tolist()
-        PACKAGING = df_ing_global[df_ing_global["Tip"] == "Ambalaj"]["Bilesen_Adi"].tolist()
+    df_ing = load_data_cached("ingredients")
+    if not df_ing.empty:
+        SOLID = df_ing[df_ing["Tip"] == "Katı"]["Bilesen_Adi"].tolist()
+        LIQUID = df_ing[df_ing["Tip"] == "Sıvı"]["Bilesen_Adi"].tolist()
+        PACKAGING = df_ing[df_ing["Tip"] == "Ambalaj"]["Bilesen_Adi"].tolist()
         ALL_ING = SOLID + LIQUID + PACKAGING
     else: SOLID, LIQUID, PACKAGING, ALL_ING = [], [], [], []
 except: SOLID, LIQUID, PACKAGING, ALL_ING = [], [], [], []
@@ -128,7 +149,7 @@ st.sidebar.title("🏭 Fabrika Paneli")
 
 with st.sidebar:
     if not st.session_state['is_admin']:
-        st.info("👀 Misafir")
+        st.info("Misafir Modu")
         pwd = st.text_input("Şifre", type="password")
         if st.button("Giriş"):
             if pwd == st.secrets["admin_password"]:
@@ -136,19 +157,23 @@ with st.sidebar:
                 st.success("OK"); st.rerun()
             else: st.error("Hata")
     else:
-        st.success("Yönetici")
         if st.button("Çıkış"): st.session_state['is_admin'] = False; st.rerun()
+    
     st.divider()
+    
     if st.session_state['is_admin']:
-        if st.button("🛠️ BAŞLIKLARI ONAR"):
-            with st.spinner("Kontrol ediliyor..."):
-                client = get_gsheet_client(); sh = client.open(SHEET_NAME)
+        if st.button("🛠️ TABLOLARI SIFIRLA (BAŞLAT)"):
+            with st.spinner("Başlatılıyor..."):
+                client = get_gsheet_client()
+                sh = client.open(SHEET_NAME)
                 for t_key, t_name in TABS.items():
                     try: ws = sh.worksheet(t_name)
                     except: ws = sh.add_worksheet(title=t_name, rows="1000", cols="20")
-                    if not ws.get_all_values(): ws.append_row(SCHEMA[t_name])
+                    if not ws.get_all_values():
+                        df_empty = pd.DataFrame(columns=SCHEMA[t_name])
+                        set_with_dataframe(ws, df_empty)
                     time.sleep(0.5)
-            st.success("Tamam!"); time.sleep(1); st.rerun()
+            st.success("Hazır!"); time.sleep(1); st.rerun()
 
 if st.session_state['is_admin']:
     menu_options = ["📝 Üretim Girişi", "📦 Stok & Limitler", "⚙️ Reçete & Hammadde", "🚚 Sevkiyat & Son Ürün", "🔍 İzlenebilirlik", "📊 Raporlar"]
@@ -171,11 +196,12 @@ if menu == "⚙️ Reçete & Hammadde":
             if nn and nn not in ALL_ING:
                 add_row_to_sheet([nn, nt], "ingredients")
                 add_row_to_sheet([nn, 0], "limits")
+                clear_cache() # Cache Temizle
                 st.success("Eklendi"); reset_forms(); st.rerun()
-        st.dataframe(df_ing_global)
+        st.dataframe(df_ing)
 
     with t1:
-        prods = load_data("products")
+        prods = load_data_cached("products")
         op = st.radio("İşlem", ["Yeni", "Düzenle"], horizontal=True, key=f"op_{f_key}")
         d_vals = {"Urun_Kodu":"", "Urun_Adi":"", "Net_Paket_KG":10.0, "Raf_Omru_Ay":24}
         s_sol, s_liq = {}, {}
@@ -193,41 +219,27 @@ if menu == "⚙️ Reçete & Hammadde":
             c1,c2,c3,c4=st.columns(4)
             pc=c1.text_input("Kod", d_vals.get("Urun_Kodu"), disabled=op=="Düzenle", key=f"pc_{uid}_{f_key}")
             pn=c2.text_input("Ad", d_vals.get("Urun_Adi"), key=f"pn_{uid}_{f_key}")
-            pnt=c3.number_input("Net KG", float(d_vals.get("Net_Paket_KG", 10)), key=f"pnt_{uid}_{f_key}")
-            psk=c4.number_input("Raf (Ay)", int(d_vals.get("Raf_Omru_Ay", 24)), key=f"psk_{uid}_{f_key}")
+            # DÜZELTME: Min Value ve Step ayarlandı
+            pnt=c3.number_input("Net KG", min_value=0.1, value=float(d_vals.get("Net_Paket_KG", 10.0)), step=0.1, key=f"pnt_{uid}_{f_key}")
+            psk=c4.number_input("Raf (Ay)", min_value=1, value=int(d_vals.get("Raf_Omru_Ay", 24)), step=1, key=f"psk_{uid}_{f_key}")
             
             st.subheader("Katı %"); ns={}; tot=0.0; cls=st.columns(4)
             for i,ing in enumerate(SOLID):
                 v = cls[i%4].number_input(f"{ing}", min_value=0.0, max_value=100.0, value=float(s_sol.get(ing,0)*100), step=0.001, format="%.3f", key=f"s_{ing}_{uid}_{f_key}")
                 ns[ing]=v/100; tot+=v
             st.caption(f"Toplam: %{tot:.3f}")
+            
             st.subheader("Sıvı KG/100"); nl={}
             for l in LIQUID: nl[l] = st.number_input(f"{l}", value=float(s_liq.get(l,0)), key=f"l_{l}_{uid}_{f_key}")
             
             if st.form_submit_button("Kaydet"):
                 if abs(tot-100)>0.001: st.error("Katı toplam %100 olmalı")
                 else:
-                    # Ürünler için Full Rewrite kullanmak zorundayız çünkü güncelleme yapıyoruz
-                    # Ancak burada da güvenli olması için clear + update kullanacağız
-                    row_data = [str(pc), str(pn), pnt, psk, str(ns), str(nl)]
-                    
-                    # Eğer yeni ürünse direkt ekle
-                    if op == "Yeni":
-                         add_row_to_sheet(row_data, "products")
-                    else:
-                        # Düzenleme ise eskiyi silip yeniyi eklemek yerine, tüm listeyi güncelleyip basıyoruz
-                        # Burası biraz riskli olabilir o yüzden ürün eklerken şimdilik append mantığıyla "Yeni Versiyon" gibi ekleyelim
-                        # Veya basitçe append_row kullanalım, eski kayıt kalsın (Log mantığı)
-                        # Ama ürün listesinde duplicate olur. En temizi ürün listesini rewrite yapmaktır.
-                        # Grok'un kodunda ürünler için rewrite vardı. Onu koruyoruz:
-                        nr = pd.DataFrame([{"Urun_Kodu":str(pc), "Urun_Adi":str(pn), "Net_Paket_KG":pnt, "Raf_Omru_Ay":psk, "Recete_Kati_JSON":str(ns), "Recete_Sivi_JSON":str(nl)}])
-                        if op=="Düzenle": prods = prods[prods["Urun_Kodu"]!=str(pc)]
-                        prods = pd.concat([prods, nr], ignore_index=True)
-                        
-                        ws = get_worksheet("urun_tanimlari")
-                        ws.clear()
-                        ws.update([prods.columns.values.tolist()] + prods.astype(str).values.tolist())
-                    
+                    nr = pd.DataFrame([{"Urun_Kodu":str(pc), "Urun_Adi":str(pn), "Net_Paket_KG":pnt, "Raf_Omru_Ay":psk, "Recete_Kati_JSON":str(ns), "Recete_Sivi_JSON":str(nl)}])
+                    if op=="Düzenle": prods = prods[prods["Urun_Kodu"]!=str(pc)]
+                    prods = pd.concat([prods, nr], ignore_index=True)
+                    save_full_df(prods, "products")
+                    clear_cache()
                     st.success("OK"); reset_forms(); st.rerun()
         
         if not prods.empty:
@@ -236,7 +248,7 @@ if menu == "⚙️ Reçete & Hammadde":
 elif menu == "📦 Stok & Limitler":
     st.header("📦 Stok Yönetimi")
     t1,t2,t3 = st.tabs(["Giriş", "Sil", "Limit"])
-    inv = load_data("inventory"); lim = load_data("limits")
+    inv = load_data_cached("inventory"); lim = load_data_cached("limits")
     
     with t1:
         c1,c2,c3=st.columns(3); c4,c5=st.columns(2)
@@ -247,11 +259,10 @@ elif menu == "📦 Stok & Limitler":
         amb=c5.number_input("Birim Gr", key=f"sa_{f_key}") if ing in PACKAGING else 0.0
         if st.button("Kaydet", key=f"bs_{f_key}"):
             sid = f"STK-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            # Append Row (Grok Yöntemi)
             add_row_to_sheet([sid, str(dt), ing, lot, qty, qty, "KG", amb], "inventory")
+            clear_cache()
             st.success("OK"); reset_forms(); st.rerun()
         if not inv.empty:
-            inv["Kalan_Miktar"]=pd.to_numeric(inv["Kalan_Miktar"], errors='coerce')
             st.dataframe(inv[inv["Kalan_Miktar"]>0])
             
     with t2:
@@ -260,8 +271,8 @@ elif menu == "📦 Stok & Limitler":
             sel = st.selectbox("Seç", opts, format_func=lambda x:x[1], key="dsl")
             if st.button("Sil"): 
                 inv=inv.drop(sel[0])
-                ws = get_worksheet("stok_durumu"); ws.clear()
-                ws.update([inv.columns.values.tolist()] + inv.astype(str).values.tolist())
+                save_full_df(inv, "inventory")
+                clear_cache()
                 st.success("OK"); st.rerun()
             
     with t3:
@@ -273,20 +284,20 @@ elif menu == "📦 Stok & Limitler":
                     cr=lim[lim["Hammadde"]==ig]
                     if not cr.empty: cur=float(cr.iloc[0]["Kritik_Limit_KG"])
                 v = st.number_input(f"{ig}", float(cur))
-                upd.append({"Hammadde":ig, "Kritik_Limit_KG":v})
+                upd.append({"Hammadde":str(ig), "Kritik_Limit_KG":str(v)})
             if st.form_submit_button("Güncelle"): 
-                ndf = pd.DataFrame(upd)
-                ws = get_worksheet("limitler"); ws.clear()
-                ws.update([ndf.columns.values.tolist()] + ndf.astype(str).values.tolist())
+                save_full_df(pd.DataFrame(upd), "limits")
+                clear_cache()
                 st.success("OK"); st.rerun()
 
 elif menu == "📝 Üretim Girişi":
     st.header("📝 Üretim Kaydı")
-    prods = load_data("products"); inv = load_data("inventory")
+    prods = load_data_cached("products"); inv = load_data_cached("inventory")
     if prods.empty: st.warning("Önce ürün ekleyin."); st.stop()
     
-    inv["Kalan_Miktar"] = pd.to_numeric(inv["Kalan_Miktar"], errors='coerce').fillna(0)
-    inv["Ambalaj_Birim_Gr"] = pd.to_numeric(inv["Ambalaj_Birim_Gr"], errors='coerce').fillna(0)
+    # CACHE KULLANDIĞIMIZ İÇİN VERİ TİPLERİNİ GARANTİLEYELİM
+    inv["Kalan_Miktar"] = pd.to_numeric(inv["Kalan_Miktar"], errors='coerce').fillna(0.0)
+    inv["Ambalaj_Birim_Gr"] = pd.to_numeric(inv["Ambalaj_Birim_Gr"], errors='coerce').fillna(0.0)
     
     c1,c2,c3,c4=st.columns(4)
     pdts=c1.date_input("Tarih", key=f"pdt_{f_key}")
@@ -301,7 +312,8 @@ elif menu == "📝 Üretim Girişi":
     
     st.subheader("1. Ambalaj")
     for pt in PACKAGING:
-        stk = inv[(inv["Hammadde"]==pt)&(inv["Kalan_Miktar"]>0)]
+        # Filter > 0
+        stk = inv[(inv["Hammadde"]==pt) & (inv["Kalan_Miktar"] > 0.001)]
         c_a,c_b = st.columns(2)
         opts = [None]+stk.to_dict('records')
         sel = c_a.selectbox(f"{pt} Parti", opts, format_func=lambda x: "Seç..." if x is None else f"{x['Parti_No']} ({x['Kalan_Miktar']})", key=f"ap_{pt}_{f_key}")
@@ -320,7 +332,7 @@ elif menu == "📝 Üretim Girişi":
             st.write(f"{ig} (Teorik: {th:.2f})")
             ca,cb,cc,cd=st.columns([1.5,2,1.5,2])
             a1=ca.number_input("M1", key=f"k1_{ig}_{f_key}")
-            opts=inv[(inv["Hammadde"]==ig)&(inv["Kalan_Miktar"]>0)]
+            opts=inv[(inv["Hammadde"]==ig) & (inv["Kalan_Miktar"] > 0.001)]
             lots=[str(r['Parti_No'])+f" ({r['Kalan_Miktar']})" for _,r in opts.iterrows()]
             l1=cb.selectbox("P1", ["Seç..."]+lots, key=f"kp1_{ig}_{f_key}")
             a2=cc.number_input("M2", key=f"k2_{ig}_{f_key}")
@@ -337,7 +349,7 @@ elif menu == "📝 Üretim Girişi":
         st.write(f"{lg} (Teorik: {th:.2f})")
         c1,c2=st.columns(2)
         a1=c1.number_input("Fiili", key=f"lf_{lg}_{f_key}")
-        opts=inv[(inv["Hammadde"]==lg)&(inv["Kalan_Miktar"]>0)]
+        opts=inv[(inv["Hammadde"]==lg) & (inv["Kalan_Miktar"] > 0.001)]
         lots=[str(r['Parti_No'])+f" ({r['Kalan_Miktar']})" for _,r in opts.iterrows()]
         l1=c2.selectbox("Parti", ["Seç..."]+lots, key=f"lp_{lg}_{f_key}")
         actl+=a1
@@ -355,32 +367,39 @@ elif menu == "📝 Üretim Girişi":
             uid=f"URT-{datetime.now().strftime('%Y%m%d%H%M%S')}"
             skt=pdts+timedelta(days=int(curr["Raf_Omru_Ay"]*30))
             
-            # 1. Üretim Logunu Ekle (Append)
             log_row = [uid, str(pdts), str(psel), str(plot), ppck, nkg, acts-theos, actl-theol, tf_amb]
             add_row_to_sheet(log_row, "production")
             
-            # 2. Stoktan Düş (Cell Update - Hedef Odaklı)
+            # Stok Düşümü (Cached Data Üzerinden Kontrol Edip Update Atıyoruz)
             for k,v in inp.items():
                 if v:
                     for i,e in enumerate(v):
                         cn=e['lot'].split(" (")[0]
-                        update_cell_in_sheet("inventory", "Parti_No", cn, "Kalan_Miktar", float(inv.loc[inv["Parti_No"]==cn, "Kalan_Miktar"].values[0]) - float(e['qty']))
+                        msk=(inv["Hammadde"]==k)&(inv["Parti_No"].astype(str)==cn)
+                        if msk.any():
+                            idx=inv[msk].index[0]
+                            current_val = float(inv.at[idx,"Kalan_Miktar"])
+                            new_val = current_val - float(e['qty'])
+                            update_cell_in_sheet("inventory", "Parti_No", cn, "Kalan_Miktar", new_val)
 
-            # 3. Bitmiş Ürün Ekle (Append)
             fg_row = [uid, str(psel), str(plot), str(pdts), str(skt), nkg, nkg, float(curr["Net_Paket_KG"])]
             add_row_to_sheet(fg_row, "finished_goods")
             
+            clear_cache() # İŞLEM BİTTİ, CACHE'İ TEMİZLE Kİ YENİ VERİ GELSİN
             st.success("Kaydedildi"); reset_forms(); st.rerun()
 
 elif menu == "🚚 Sevkiyat & Son Ürün":
     st.header("🚚 Sevkiyat")
     t1,t2,t3 = st.tabs(["Sevk Et", "Geçmiş", "Stok"])
-    fg=load_data("finished_goods"); sh=load_data("shipments")
-    if not fg.empty: fg["Kalan_Net_KG"]=pd.to_numeric(fg["Kalan_Net_KG"], errors='coerce').fillna(0)
+    fg=load_data_cached("finished_goods"); sh=load_data_cached("shipments")
+    
+    # Numeric conversion
+    if not fg.empty: 
+        fg["Kalan_Net_KG"] = pd.to_numeric(fg["Kalan_Net_KG"], errors='coerce').fillna(0.0)
     
     with t1:
         if not fg.empty:
-            act=fg[fg["Kalan_Net_KG"]>0].copy()
+            act=fg[fg["Kalan_Net_KG"]>0.01].copy()
             if not act.empty:
                 sp=st.selectbox("Ürün", act["Urun_Kodu"].unique(), key=f"sp_{f_key}")
                 opts=act[act["Urun_Kodu"]==sp]
@@ -393,14 +412,13 @@ elif menu == "🚚 Sevkiyat & Son Ürün":
                 kg=c3.number_input(f"KG (Max {sr['Kalan_Net_KG']})", max_value=float(sr['Kalan_Net_KG']), key=f"skg_{f_key}")
                 nt=st.text_input("Not", key=f"snt_{f_key}")
                 if st.button("Sevk Et", key=f"sbt_{f_key}"):
-                    # Stok Düş (Cell Update)
                     new_val = float(sr["Kalan_Net_KG"]) - kg
                     update_cell_in_sheet("finished_goods", "Uretim_Parti_No", sr["Uretim_Parti_No"], "Kalan_Net_KG", new_val)
                     
-                    # Log Ekle (Append)
                     ship_row = [f"S-{datetime.now().strftime('%Y%m%d%H%M')}", str(datetime.now()), str(sr["Uretim_ID"]), cu, ty, kg, nt]
                     add_row_to_sheet(ship_row, "shipments")
                     
+                    clear_cache()
                     st.success("Kaydedildi"); reset_forms(); st.rerun()
             else: st.info("Stok yok")
     with t2:
@@ -416,7 +434,7 @@ elif menu == "🚚 Sevkiyat & Son Ürün":
 
 elif menu == "🔍 İzlenebilirlik":
     st.header("🔍 İzlenebilirlik")
-    prod=load_data("production"); fg=load_data("finished_goods")
+    prod=load_data_cached("production"); fg=load_data_cached("finished_goods")
     if not prod.empty:
         prod["Tarih_Fmt"]=prod["Tarih"].apply(format_date_tr)
         prod["Etiket"]=prod["Uretim_Parti_No"]+" ("+prod["Tarih_Fmt"]+")"
@@ -430,12 +448,13 @@ elif menu == "🔍 İzlenebilirlik":
         c2.metric("Depoda", f"{(datetime.now()-pd.to_datetime(row['Tarih'])).days} Gün")
         if not rel.empty:
             c3.metric("SKT", format_date_tr(rel.iloc[0]["SKT"]))
-            c4.metric("Stok", f"{float(rel.iloc[0]['Kalan_Net_KG']):.2f} KG")
+            val = float(rel.iloc[0]['Kalan_Net_KG'])
+            c4.metric("Stok", f"{val:.2f} KG")
         else: c3.metric("Durum", "Silindi")
 
 elif menu == "📊 Raporlar":
     st.header("📊 Raporlar")
-    prod=load_data("production")
+    prod=load_data_cached("production")
     if not prod.empty:
         def sd(n,d): return n/d*100 if d>0 else 0
         prod = prod.fillna(0)
@@ -454,19 +473,17 @@ elif menu == "📊 Raporlar":
         fin=[c for c in cols if c in prod.columns]
         prod["Tarih"]=prod["Tarih"].apply(format_date_tr)
         st.dataframe(prod[fin].style.format({"Katı %":"{:.2f}%","Sıvı %":"{:.2f}%","Fire_Kati_KG":"{:.2f}","Amb (gr/pkt)":"{:.1f} gr"}))
-    else:
-        st.info("Henüz veri yok.")
 
 elif menu == "📦 Stok Durumu (İzle)":
     st.header("📦 Stok Durumu")
-    inv = load_data("inventory")
+    inv = load_data_cached("inventory")
     if not inv.empty:
         inv["Kalan_Miktar"] = pd.to_numeric(inv["Kalan_Miktar"], errors='coerce')
         st.dataframe(inv[inv["Kalan_Miktar"] > 0][["Tarih", "Hammadde", "Parti_No", "Kalan_Miktar"]])
 
 elif menu == "🚚 Son Ürün (İzle)":
     st.header("🚚 Son Ürün Stokları")
-    fg = load_data("finished_goods")
+    fg = load_data_cached("finished_goods")
     if not fg.empty:
         fg["Kalan_Net_KG"] = pd.to_numeric(fg["Kalan_Net_KG"], errors='coerce')
         v = fg[fg["Kalan_Net_KG"] > 0].copy()
