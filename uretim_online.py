@@ -163,9 +163,9 @@ with st.sidebar:
     st.divider()
 
 if st.session_state['is_admin']:
-    menu_options = ["📝 Üretim Girişi", "📦 Stok & Limitler", "⚙️ Reçete & Hammadde", "🚚 Sevkiyat & Son Ürün", "📊 Raporlar & İzlenebilirlik"]
+    menu_options = ["📝 Üretim Girişi", "📦 Hammadde Stok", "⚙️ Reçete & Hammadde", "🚚 Sevkiyat", "📦 Son Ürün Stok", "🔍 İzlenebilirlik"]
 else:
-    menu_options = ["📊 Raporlar & İzlenebilirlik", "📦 Stok Durumu (İzle)", "🚚 Son Ürün (İzle)"]
+    menu_options = ["🔍 İzlenebilirlik", "📦 Hammadde Stok (İzle)", "📦 Son Ürün Stok (İzle)"]
 
 menu = st.sidebar.radio("Menü", menu_options)
 f_key = st.session_state['form_key']
@@ -205,6 +205,11 @@ if menu == "⚙️ Reçete & Hammadde":
                 add_row_to_sheet(log_row, "deletion_logs")
                 clear_cache()
                 st.success("Silindi ve Loglandı"); st.rerun()
+        if st.session_state['is_admin']:
+            del_logs = load_data("deletion_logs")
+            if not del_logs.empty:
+                st.subheader("Silme Logları")
+                st.dataframe(del_logs)
 
     with t1:
         prods = load_data("products")
@@ -253,8 +258,8 @@ if menu == "⚙️ Reçete & Hammadde":
             prods["Sıvı Reçete"] = prods["Recete_Sivi_JSON"].apply(lambda x: ", ".join([f"{k}: {v:.2f}kg/100" for k,v in ast.literal_eval(x).items() if v > 0]))
             st.dataframe(prods[["Urun_Kodu","Urun_Adi","Net_Paket_KG", "Katı Reçete", "Sıvı Reçete"]])
 
-elif menu == "📦 Stok & Limitler":
-    st.header("📦 Stok Yönetimi")
+elif menu == "📦 Hammadde Stok":
+    st.header("📦 Hammadde Stok")
     t1,t2,t3 = st.tabs(["Giriş", "Sil", "Limit"])
     inv = load_data("inventory"); lim = load_data("limits")
     
@@ -291,6 +296,11 @@ elif menu == "📦 Stok & Limitler":
                 add_row_to_sheet(log_row, "deletion_logs")
                 clear_cache()
                 st.success("OK"); st.rerun()
+        if st.session_state['is_admin']:
+            del_logs = load_data("deletion_logs")
+            if not del_logs.empty:
+                st.subheader("Silme Logları")
+                st.dataframe(del_logs)
             
     with t3:
         with st.form("lf"):
@@ -407,9 +417,9 @@ elif menu == "📝 Üretim Girişi":
             clear_cache()
             st.success("Kaydedildi"); reset_forms(); st.rerun()
 
-elif menu == "🚚 Sevkiyat & Son Ürün":
+elif menu == "🚚 Sevkiyat":
     st.header("🚚 Sevkiyat")
-    t1,t2,t3 = st.tabs(["Sevk Et", "Geçmiş", "Stok"])
+    t1,t2 = st.tabs(["Sevk Et", "Geçmiş"])
     fg=load_data("finished_goods"); sh=load_data("shipments")
     if not fg.empty: fg["Kalan_Net_KG"]=pd.to_numeric(fg["Kalan_Net_KG"], errors='coerce').fillna(0)
     
@@ -439,19 +449,24 @@ elif menu == "🚚 Sevkiyat & Son Ürün":
         if not sh.empty: 
             sh["Tarih"]=sh["Tarih"].apply(format_date_tr)
             st.dataframe(sh.sort_values("Sevkiyat_ID", ascending=False))
-    with t3:
-        if not fg.empty:
-            v=fg[fg["Kalan_Net_KG"]>0].copy()
-            urun_filter = st.selectbox("Ürün Filtresi", ["Tümü"] + sorted(v["Urun_Kodu"].unique().tolist()))
-            if urun_filter != "Tümü":
-                v = v[v["Urun_Kodu"] == urun_filter]
-            v["Tarih"]=v["Uretim_Tarihi"].apply(format_date_tr); v["SKT"]=v["SKT"].apply(format_date_tr)
-            v["Paket"]=v["Kalan_Net_KG"]/pd.to_numeric(v["Paket_Agirligi"], errors='coerce')
-            st.dataframe(v[["Urun_Kodu","Uretim_Parti_No","Tarih","SKT","Kalan_Net_KG","Paket"]])
 
-elif menu == "📊 Raporlar & İzlenebilirlik":
-    st.header("📊 Raporlar & İzlenebilirlik")
-    t1, t2 = st.tabs(["Raporlar", "İzlenebilirlik"])
+elif menu == "📦 Son Ürün Stok":
+    st.header("📦 Son Ürün Stok")
+    fg=load_data("finished_goods")
+    if not fg.empty: fg["Kalan_Net_KG"]=pd.to_numeric(fg["Kalan_Net_KG"], errors='coerce').fillna(0)
+    
+    if not fg.empty:
+        v=fg[fg["Kalan_Net_KG"]>0].copy()
+        urun_filter = st.selectbox("Ürün Filtresi", ["Tümü"] + sorted(v["Urun_Kodu"].unique().tolist()))
+        if urun_filter != "Tümü":
+            v = v[v["Urun_Kodu"] == urun_filter]
+        v["Tarih"]=v["Uretim_Tarihi"].apply(format_date_tr); v["SKT"]=v["SKT"].apply(format_date_tr)
+        v["Paket"]=v["Kalan_Net_KG"]/pd.to_numeric(v["Paket_Agirligi"], errors='coerce')
+        st.dataframe(v[["Urun_Kodu","Uretim_Parti_No","Tarih","SKT","Kalan_Net_KG","Paket"]])
+
+elif menu == "🔍 İzlenebilirlik":
+    st.header("🔍 İzlenebilirlik")
+    t1, t2 = st.tabs(["Üretim Detay&Fireler", "İzlenebilirlik"])
     
     with t1:
         prod=load_data("production")
@@ -460,12 +475,13 @@ elif menu == "📊 Raporlar & İzlenebilirlik":
             prod["Giren"] = prod["Uretilen_Net_KG"] + prod["Fire_Kati_KG"]
             prod["Katı %"] = [sd(f,g) for f,g in zip(prod["Fire_Kati_KG"], prod["Giren"])]
             prod["Sıvı %"] = [sd(f,n) for f,n in zip(prod["Fire_Sivi_KG"], prod["Uretilen_Net_KG"])]
-            prod["Amb (gr/pkt)"] = [sd(f*1000, p)/100 for f,p in zip(prod["Fire_Amb_KG"], prod["Uretilen_Paket"])]
+            prod["Amb %"] = [sd(f,n) for f,n in zip(prod["Fire_Amb_KG"], prod["Uretilen_Net_KG"])]
+            prod["Amb (gr/pkt)"] = [sd(f*1000, p) for f,p in zip(prod["Fire_Amb_KG"], prod["Uretilen_Paket"])]
             
-            cols=["Tarih","Urun_Kodu","Uretim_Parti_No","Uretilen_Net_KG","Fire_Kati_KG","Katı %","Fire_Sivi_KG","Sıvı %","Fire_Amb_KG","Amb (gr/pkt)"]
+            cols=["Tarih","Urun_Kodu","Uretim_Parti_No","Uretilen_Net_KG","Fire_Kati_KG","Katı %","Fire_Sivi_KG","Sıvı %","Fire_Amb_KG","Amb %","Amb (gr/pkt)"]
             fin=[c for c in cols if c in prod.columns]
             prod["Tarih"]=prod["Tarih"].apply(format_date_tr)
-            st.dataframe(prod[fin].style.format({"Katı %":"{:.2f}%","Sıvı %":"{:.2f}%","Fire_Kati_KG":"{:.2f}","Fire_Sivi_KG":"{:.2f}","Fire_Amb_KG":"{:.2f}","Amb (gr/pkt)":"{:.1f} gr"}))
+            st.dataframe(prod[fin].style.format({"Katı %":"{:.2f}%","Sıvı %":"{:.2f}%","Amb %":"{:.2f}%","Fire_Kati_KG":"{:.2f}","Fire_Sivi_KG":"{:.2f}","Fire_Amb_KG":"{:.2f}","Amb (gr/pkt)":"{:.1f} gr"}))
     
     with t2:
         prod=load_data("production"); fg=load_data("finished_goods")
@@ -501,20 +517,22 @@ elif menu == "📊 Raporlar & İzlenebilirlik":
                     st.table(pd.DataFrame(det_data))
                 except: st.write(row["Detaylar"])
 
-elif menu == "📦 Stok Durumu (İzle)":
-    st.header("📦 Stok Durumu")
+elif menu == "📦 Hammadde Stok (İzle)":
+    st.header("📦 Hammadde Stok")
     inv = load_data("inventory")
     if not inv.empty:
         st.dataframe(inv[inv["Kalan_Miktar"] > 0][["Tarih", "Hammadde", "Parti_No", "Kalan_Miktar"]])
 
-elif menu == "🚚 Son Ürün (İzle)":
-    st.header("🚚 Son Ürün Stokları")
-    fg = load_data("finished_goods")
+elif menu == "📦 Son Ürün Stok (İzle)":
+    st.header("📦 Son Ürün Stok")
+    fg=load_data("finished_goods")
+    if not fg.empty: fg["Kalan_Net_KG"]=pd.to_numeric(fg["Kalan_Net_KG"], errors='coerce').fillna(0)
+    
     if not fg.empty:
-        v = fg[fg["Kalan_Net_KG"] > 0].copy()
+        v=fg[fg["Kalan_Net_KG"]>0].copy()
         urun_filter = st.selectbox("Ürün Filtresi", ["Tümü"] + sorted(v["Urun_Kodu"].unique().tolist()))
         if urun_filter != "Tümü":
             v = v[v["Urun_Kodu"] == urun_filter]
-        v["Tarih"] = v["Uretim_Tarihi"].apply(format_date_tr)
-        v["SKT"] = v["SKT"].apply(format_date_tr)
-        st.dataframe(v[["Urun_Kodu", "Uretim_Parti_No", "Tarih", "SKT", "Kalan_Net_KG"]])
+        v["Tarih"]=v["Uretim_Tarihi"].apply(format_date_tr); v["SKT"]=v["SKT"].apply(format_date_tr)
+        v["Paket"]=v["Kalan_Net_KG"]/pd.to_numeric(v["Paket_Agirligi"], errors='coerce')
+        st.dataframe(v[["Urun_Kodu","Uretim_Parti_No","Tarih","SKT","Kalan_Net_KG","Paket"]])
