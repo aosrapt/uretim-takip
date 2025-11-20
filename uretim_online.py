@@ -213,7 +213,7 @@ if menu == "⚙️ Reçete & Hammadde":
             
             st.subheader("Katı %"); ns={}; tot=0.0; cls=st.columns(4)
             for i,ing in enumerate(SOLID):
-                v = cls[i%4].number_input(f"{ing}", float(s_sol.get(ing,0)*100), 0.0, 100.0, 0.001, format="%.3f", key=f"s_{ing}_{uid}_{f_key}")
+                v = cls[i%4].number_input(f"{ing}", 0.0, 100.0, float(s_sol.get(ing,0)*100), 0.001, format="%.3f", key=f"s_{ing}_{uid}_{f_key}")
                 ns[ing]=v/100; tot+=v
             st.caption(f"Toplam: %{tot:.3f}")
             st.subheader("Sıvı KG/100"); nl={}
